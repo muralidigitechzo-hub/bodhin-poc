@@ -43,6 +43,8 @@ export default function Player() {
   const [dl, setDl] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const lastSaved = useRef(0);
+  const lastT = useRef<number | null>(null); // previous playback time, to tell watching from seeking
+  const lastLesson = useRef<string | null>(null);
 
   const data = useMemo(() => {
     try {
@@ -95,6 +97,10 @@ export default function Player() {
 
   const onTime = (t: number, duration: number) => {
     setNow(t);
+    // real watching feeds the tutor's drop-off heatmap (a normal playback tick moves ≤ 3 s × speed; bigger jumps are seeks)
+    if (enrolled && lastT.current != null && lastLesson.current === lesson.id) player.recordWatch(userId, course.id, lesson.id, lastT.current, t, 3.5 * speed);
+    lastT.current = t;
+    lastLesson.current = lesson.id;
     if (Math.abs(t - lastSaved.current) >= 5) {
       player.savePosition(userId, lesson.id, t);
       lastSaved.current = t;

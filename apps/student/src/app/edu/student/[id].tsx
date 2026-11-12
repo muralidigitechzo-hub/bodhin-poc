@@ -23,6 +23,7 @@ const ago = (iso: string) => {
   if (m < 1440) return `${Math.round(m / 60)} h ago`;
   return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 };
+import { agoLabel } from '@/core/nudge';
 const mask = (p: string) => (p ? p.replace(/^(\+\d{2})(\d{2})\d{6}(\d{2})$/, '$1 $2••••••$3') : '—');
 
 export default function StudentProfile() {
@@ -72,6 +73,7 @@ export default function StudentProfile() {
                   <Txt variant="caption" color={c.muted}>{mask(p.phone)} · {p.enrollmentId}</Txt>
                   <View style={{ flexDirection: 'row', gap: 6, marginTop: 2 }}>
                     <Pill text={Date.now() - new Date(p.lastActiveAt).getTime() < 14 * 864e5 ? 'Active' : 'Inactive'} tone={Date.now() - new Date(p.lastActiveAt).getTime() < 14 * 864e5 ? 'success' : 'live'} />
+                    {data.risk?.atRisk && <Pill text={data.risk.level === 'high' ? 'High risk' : 'At risk'} tone={data.risk.level === 'high' ? 'live' : 'warning'} icon="alert-circle" />}
                     {p.userId && <Pill text="Uses the app" tone="info" icon="phone-portrait-outline" />}
                   </View>
                 </View>
@@ -85,6 +87,31 @@ export default function StudentProfile() {
                   </View>
                 ))}
               </View>
+              {data.risk?.atRisk && (
+                <View style={[styles.riskBox, { backgroundColor: c.warningBg, borderColor: data.risk.level === 'high' ? c.danger : c.warning }]} accessibilityRole="alert">
+                  <Txt variant="label" style={{ fontWeight: '700' }}>Why this student is flagged</Txt>
+                  {data.risk.reasons.map((x) => (
+                    <View key={x.kind} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name={x.kind === 'attendance' ? 'calendar-outline' : 'time-outline'} size={16} color={c.warning} />
+                      <Txt variant="label" style={{ flex: 1, fontWeight: '500' }}>{x.text}</Txt>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {data.nudges.length > 0 && (
+                <View style={[styles.riskBox, { backgroundColor: c.surfaceMuted, borderColor: c.border }]}>
+                  <Txt variant="label" style={{ fontWeight: '700' }}>Nudge history</Txt>
+                  {data.nudges.map((n) => (
+                    <View key={n.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Ionicons name={n.returned ? 'checkmark-circle' : 'paper-plane-outline'} size={16} color={n.returned ? c.success : c.muted} />
+                      <Txt variant="caption" color={n.returned ? c.success : c.inkSoft} style={{ flex: 1 }}>
+                        {agoLabel(n.at)} · {n.channel === 'app' ? 'in-app' : n.channel === 'email' ? 'email' : 'WhatsApp'}{n.returned ? ' · came back' : ''}
+                      </Txt>
+                    </View>
+                  ))}
+                  <Txt variant="caption" color={c.muted}>To send another nudge, open the Retention radar.</Txt>
+                </View>
+              )}
               <View style={{ flexDirection: 'row', gap: 8 }}>
                 <Button title="Message" iconLeft="chatbubble-outline" size="md" style={{ flex: 1 }} onPress={() => setMsg(true)} />
                 <Button title="Add note" iconLeft="document-text-outline" variant="outline" size="md" style={{ flex: 1 }} onPress={() => setTab('notes')} />
@@ -254,6 +281,7 @@ function KV({ k, v }: { k: string; v: string }) {
 }
 
 const styles = StyleSheet.create({
+  riskBox: { borderWidth: 1.2, borderRadius: 14, padding: 12, gap: 6 },
   top: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 6 },
   pad: { paddingHorizontal: 16, alignItems: 'center' },
   inner: { width: '100%', maxWidth: layout.contentMaxWidth, gap: 12 },

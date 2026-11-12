@@ -3,7 +3,7 @@
    "no third-party branding on screen" guarantee (scans the UI source). */
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { HOST_ONLY, decodeMsg, encodeMsg, grantFor, isAllowedFrom, joinWindow, makeRateLimiter, roomName, strokePath, type RoomMsg } from '@/live/protocol';
+import { HOST_ONLY, decodeMsg, encodeMsg, grantFor, isAllowedFrom, joinWindow, makeRateLimiter, roomName, strokePath, strokePieces, type RoomMsg } from '@/live/protocol';
 import { LoopbackRoom } from '@/live/loopback';
 import { liveTab } from '@/api/client';
 
@@ -67,6 +67,20 @@ const quizPoll = samples.find((m) => m.t === 'poll' && (m as { quiz?: boolean })
 ok(!('correct' in quizPoll), 'quiz poll message carries no answer');
 ok(strokePath([[0.5, 0.5]]).includes('L'), 'a single tap still draws a dot');
 
+/* ── live whiteboard: pieces sent while writing rebuild the exact stroke, connected, nothing lost or sent twice ── */
+{
+  const stroke: [number, number][] = Array.from({ length: 1000 }, (_, i) => [i / 1000, (i % 50) / 50]);
+  let sent = 0; const got: [number, number][][] = [];
+  for (const upTo of [3, 40, 41, 300, 700, 1000]) { const r = strokePieces(stroke.slice(0, upTo), sent, upTo === 1000); r.pieces.forEach((p) => got.push(p)); sent = r.sent; }
+  const flat: [number, number][] = []; got.forEach((p, i) => flat.push(...(i === 0 ? p : p.slice(1))));
+  ok(JSON.stringify(flat) === JSON.stringify(stroke), 'streamed pieces rebuild the whole stroke with no gap and no duplicate');
+  ok(got.every((p) => p.length >= 2 && p.length <= 400), 'every piece is a connected line within the 400-point message limit', got.map((p) => p.length));
+  ok(got.slice(1).every((p, i) => JSON.stringify(p[0]) === JSON.stringify(got[i][got[i].length - 1])), 'each piece starts where the previous one ended');
+  const tap = strokePieces([[0.5, 0.5]], 0, true);
+  ok(tap.pieces.length === 1 && tap.pieces[0].length === 1, 'a single tap is still sent (drawn as a dot)');
+  ok(strokePieces([[0.1, 0.1], [0.2, 0.2]], 0, false).pieces.length === 1 && strokePieces([[0.1, 0.1]], 0, false).pieces.length === 0, 'while writing, the newest point is held back until the next tick');
+}
+
 /* ── loopback classroom: host + learners exchange every non-media feature; nothing is simulated ── */
 // run.sh stubs setTimeout to fire immediately, so wait on the real event loop (setImmediate) instead
 const sleep = async (ms: number) => { const t = Date.now(); while (Date.now() - t < ms) await new Promise<void>((r) => setImmediate(r)); };
@@ -112,6 +126,39 @@ ok(pastBefore === sched.past.length, 'a class that is still running is not in Pa
 ok(sched.liveNow.some((r) => r.session.id === 'ls_now' && r.attended), 'a learner who stayed counts as attended');
 ok(liveTab.recording('u_arjun', 'ls_now')?.recording.state === 'none', 'no recording until a class is recorded');
 ok(liveTab.recording('u_nobody', 'ls_now') === null, 'only enrolled learners open a recording');
+/* tutor starts a class → enrolled learners see it as LIVE NOW, get a notification with a link, and can join early; others are not told */
+{
+  const { liveAdmin } = await import('@/api/client');
+  const id = 'ls_1'; // Digital Marketing, scheduled for this evening (not live by the clock)
+  const before = liveTab.startedNow('u_arjun').some((x) => x.session.id === id);
+  const notesBefore = (await import('@/api/mockDb')).db.notifications.filter((n) => n.userId === 'u_arjun' && n.title === 'Your class is live now').length;
+  liveAdmin.start('u_rajesh', id);
+  const dbm = (await import('@/api/mockDb')).db;
+  ok(!before && liveTab.startedNow('u_arjun').some((x) => x.session.id === id), 'a class the tutor started shows up for an enrolled learner');
+  ok(dbm.notifications.filter((n) => n.userId === 'u_arjun' && n.title === 'Your class is live now').length === notesBefore + 1, 'the enrolled learner gets one "class is live" notification');
+  const note = dbm.notifications.filter((n) => n.userId === 'u_arjun' && n.title === 'Your class is live now').pop();
+  ok(note?.link?.pathname === '/live-room/[id]' && note.link.params?.id === id, 'the notification opens the live room');
+  ok(!liveTab.startedNow('u_nobody').some((x) => x.session.id === id), 'a learner who is not in that course is not shown the class');
+  ok(!dbm.notifications.some((n) => n.userId === 'u_rajesh' && n.title === 'Your class is live now' && n.body.includes('ls_1')), 'the tutor is not notified about their own class');
+  liveAdmin.start('u_rajesh', id);
+  ok(dbm.notifications.filter((n) => n.userId === 'u_arjun' && n.title === 'Your class is live now').length === notesBefore + 1, 'starting again does not notify twice');
+  const s2 = await liveTab.schedule('u_arjun', null);
+  ok(s2.liveNow.some((r) => r.session.id === id) && !s2.upcoming.some((r) => r.session.id === id), 'the started class moves from Upcoming to Live now');
+  let joined = true; try { await liveTab.join('u_arjun', id); } catch { joined = false; }
+  ok(joined, 'a learner can join a started class before the usual 10-minute window');
+  let blocked = false; try { await liveTab.join('u_nobody', id); } catch { blocked = true; }
+  ok(blocked, 'a learner outside the course still cannot join');
+}
+/* camera / mic permission errors tell the person what to do */
+{
+  const { explainMediaError } = await import('@/live/devices');
+  const blocked = (await explainMediaError({ name: 'NotAllowedError' }, 'camera')).message;
+  ok(/address bar/i.test(blocked) && /Allow/.test(blocked), 'a refused camera says where to switch it back on', blocked);
+  ok(/another app/i.test((await explainMediaError({ name: 'NotReadableError' }, 'microphone')).message), 'a busy microphone says another app is using it');
+  ok(/No camera was found/i.test((await explainMediaError({ name: 'NotFoundError' }, 'camera')).message), 'a missing camera is reported as missing');
+  ok(/address bar/i.test((await explainMediaError({ name: 'TimeoutError' }, 'camera')).message), 'a permission box that never appeared points to the address bar');
+  ok(/cancelled/i.test((await explainMediaError({ name: 'NotAllowedError' }, 'screen')).message), 'a cancelled screen share is explained');
+}
 /* the list and the recording page must agree on attendance (report bug: list "Attended", detail "Missed") */
 const mismatches = sched.past.filter((r) => { const d = liveTab.recording('u_arjun', r.session.id); return !d || d.attended !== r.attended || (d.attendance?.minutes ?? 0) !== (r.attendance?.minutes ?? 0); }).map((r) => r.session.id);
 ok(sched.past.length > 0 && mismatches.length === 0, 'recording page shows the same attendance as the list for every past class', mismatches);

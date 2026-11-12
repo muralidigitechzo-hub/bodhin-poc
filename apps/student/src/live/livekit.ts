@@ -24,6 +24,9 @@ export interface RoomHandlers {
   onState: (s: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void;
   /** `peerCamera` = the first non-host participant's camera: lets a host see the other person in a 1-on-1 call. Classes ignore it. */
   onVideo: (v: { hostCamera: MediaStream | null; hostScreen: MediaStream | null; peerCamera?: MediaStream | null }) => void;
+  onVideo: (v: { hostCamera: MediaStream | null; hostScreen: MediaStream | null; /** a learner the host let speak (video is null when only their mic is on) */ speaker?: { name: string; stream: MediaStream | null } | null }) => void;
+  /** The host's own camera / screen, for a local preview (host side only). */
+  onLocal?: (v: { camera: MediaStream | null; screen: MediaStream | null }) => void;
 }
 
 export async function prepareNative() {

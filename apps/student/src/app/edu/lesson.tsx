@@ -16,6 +16,7 @@ import { layout, radius } from '@/theme/tokens';
 import { Txt } from '@/ui/Txt';
 import { Button } from '@/ui/Button';
 import { TextField } from '@/ui/TextField';
+import { LessonDropoff } from '@/ui/Dropoff';
 import { BottomSheet, Chip, IconButton, Pill, ProgressBar } from '@/ui/kit';
 import { Banner } from '@/ui/misc';
 
@@ -141,6 +142,8 @@ export default function LessonEditor() {
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <View style={styles.inner}>
             {err && !err.field && <Banner text={err.msg} />}
+
+            {existing && existing.type === 'video' && <LessonDropoff courseId={course.id} lessonId={existing.id} />}
 
             <View style={[styles.section, { backgroundColor: t.surface, borderColor: t.border }]}>
               <Txt variant="label">Module</Txt>

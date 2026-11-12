@@ -158,6 +158,9 @@ export default function CourseBuilder() {
             <Txt variant="heading" numberOfLines={1}>{c.title || 'New course'}</Txt>
             <Pill text={STATE_META[meta.state].label} tone={STATE_META[meta.state].tone} />
           </View>
+          {c.modules.some((m) => m.lessons.some((l) => l.type === 'video')) && (
+            <IconButton icon="analytics-outline" label="Video insights: where viewers drop off" tone="filled" onPress={() => { save(true); router.push({ pathname: '/edu/watch/[courseId]', params: { courseId: c.id } }); }} />
+          )}
           <IconButton icon="eye-outline" label="Preview as a student" tone="filled" onPress={() => { save(true); router.push({ pathname: '/course/[id]', params: { id: c.id } }); }} />
         </View>
 

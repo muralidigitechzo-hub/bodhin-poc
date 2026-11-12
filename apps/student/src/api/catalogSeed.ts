@@ -285,7 +285,7 @@ function at(daysFromNow: number, hour: number, minute = 0, durMin = 60) {
 /** A class that is live right now, so the demo always has something to join. */
 function liveNow() {
   const s = new Date(Date.now() - 32 * 6e4);
-  return { startsAt: s.toISOString(), endsAt: new Date(s.getTime() + 90 * 6e4).toISOString() };
+  return { startsAt: s.toISOString(), endsAt: new Date(s.getTime() + 8 * 36e5).toISOString() }; // stays open for the demo day
 }
 
 /** Only scheduled classes are seeded. Past classes, attendance and recordings appear only after a real class is held. */
@@ -296,6 +296,13 @@ export const liveSessions: LiveSession[] = [
   { id: 'ls_3', courseId: 'c_meta_ads', title: 'Meta Ads Masterclass: Scaling', ...at(3, 19, 0, 60), registeredUserIds: [] },
   { id: 'ls_4', courseId: 'c_web_ai', title: 'Build a Landing Page Live', ...at(4, 18, 30, 90), registeredUserIds: [] },
 ];
+/** Every course gets an upcoming live session, so any enrolled learner sees a class in the Live tab. */
+const COVERED = new Set(liveSessions.map((s) => s.courseId));
+liveSessions.push(
+  ...courses
+    .filter((c) => !COVERED.has(c.id))
+    .map((c, i): LiveSession => ({ id: `ls_${c.id}`, courseId: c.id, title: `${c.title} – Live Q&A`, ...at(1 + (i % 5), 17 + (i % 3), 0, 60), registeredUserIds: [] })),
+);
 
 import type { Review } from '@/core/catalog';
 const ago = (d: number) => new Date(Date.now() - d * 864e5).toISOString();

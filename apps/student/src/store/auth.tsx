@@ -43,9 +43,14 @@ interface AuthState {
 
 const Ctx = createContext<AuthState | null>(null);
 
+/**
+ * Login and view mode are kept per browser TAB (sessionStorage) and also remembered for the next tab (localStorage).
+ * So a tutor tab and a student tab can stay signed in as different people, and refreshing one never switches its account.
+ */
 const read = (k: string) => {
   try {
-    return web ? window.localStorage.getItem(k) : null;
+    if (!web) return null;
+    return window.sessionStorage.getItem(k) ?? window.localStorage.getItem(k);
   } catch {
     return null;
   }
@@ -53,7 +58,13 @@ const read = (k: string) => {
 const write = (k: string, v: string | null) => {
   try {
     if (!web) return;
-    v == null ? window.localStorage.removeItem(k) : window.localStorage.setItem(k, v);
+    if (v == null) {
+      window.sessionStorage.removeItem(k);
+      window.localStorage.removeItem(k);
+    } else {
+      window.sessionStorage.setItem(k, v);
+      window.localStorage.setItem(k, v);
+    }
   } catch {
     /* ignore */
   }
