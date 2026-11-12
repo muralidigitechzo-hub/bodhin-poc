@@ -85,7 +85,8 @@ export default function Player() {
     );
   }
 
-  const { course, module, lesson, prev, next, enrolled, completed, tutor } = data;
+  const { course, module, lesson, prev, next, enrolled, completed, tutor, reviewer } = data;
+  const open = enrolled || reviewer; // reviewers (Bodhin staff, course educators) can watch every lesson
   const isDone = completed.has(lesson.id);
   const moduleNo = course.modules.indexOf(module) + 1;
   const lessonNo = module.lessons.indexOf(lesson) + 1;
@@ -138,7 +139,7 @@ export default function Player() {
         <Txt variant="label" color={isDone ? c.success : c.ink}>{isDone ? 'Done' : 'Mark done'}</Txt>
       </Pressable>
     )}
-    <Button title={next ? 'Next' : 'Finish'} iconRight={next ? 'arrow-forward' : 'trophy'} style={{ flex: 1 }} disabled={!!next && !enrolled && !next.preview} onPress={() => (next ? go(next) : back())} />
+    <Button title={next ? 'Next' : 'Finish'} iconRight={next ? 'arrow-forward' : 'trophy'} style={{ flex: 1 }} disabled={!!next && !open && !next.preview} onPress={() => (next ? go(next) : back())} />
     </>
   );
 
@@ -194,7 +195,7 @@ export default function Player() {
                   <Txt variant="title" style={{ fontSize: 21, lineHeight: 27 }}>{lesson.title}</Txt>
                   <Txt variant="label" color={c.muted} style={{ fontWeight: '500' }}>Module {moduleNo}: {module.title}</Txt>
                 </View>
-                {isDone ? <Pill text="Completed" tone="success" icon="checkmark" /> : !enrolled ? <Pill text="Free preview" tone="info" /> : null}
+                {isDone ? <Pill text="Completed" tone="success" icon="checkmark" /> : !enrolled ? <Pill text={lesson.preview ? 'Free preview' : 'Reviewer access'} tone="info" /> : null}
               </View>
 
               {/* actions */}
@@ -234,7 +235,7 @@ export default function Player() {
                   {module.lessons.map((l, i) => {
                     const cur = l.id === lesson.id;
                     const done = completed.has(l.id);
-                    const locked = !enrolled && !l.preview;
+                    const locked = !open && !l.preview;
                     return (
                       <Pressable key={l.id} disabled={locked} onPress={() => go(l)} style={[styles.row, { borderTopColor: c.border }, cur && { backgroundColor: c.primarySoft }]} accessibilityRole="button" accessibilityState={{ selected: cur, disabled: locked }}>
                         <Ionicons name={l.type === 'video' ? (cur ? 'play-circle' : 'play-circle-outline') : l.type === 'pdf' ? 'document-text-outline' : 'help-circle-outline'} size={26} color={cur ? c.primary : c.inkSoft} />
@@ -292,7 +293,7 @@ export default function Player() {
                   {mod.lessons.map((l, i) => {
                     const cur = l.id === lesson.id;
                     const done = completed.has(l.id);
-                    const locked = !enrolled && !l.preview;
+                    const locked = !open && !l.preview;
                     return (
                       <Pressable key={l.id} disabled={locked} onPress={() => go(l)} style={({ hovered }: any) => [styles.row, { borderTopColor: c.border, paddingHorizontal: 16 }, cur ? { backgroundColor: c.primarySoft } : hovered && { backgroundColor: c.surfaceMuted }]} accessibilityRole="button" accessibilityState={{ selected: cur, disabled: locked }}>
                         <Ionicons name={l.type === 'video' ? (cur ? 'play-circle' : 'play-circle-outline') : l.type === 'pdf' ? 'document-text-outline' : 'help-circle-outline'} size={22} color={cur ? c.primary : c.inkSoft} />

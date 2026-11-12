@@ -19,7 +19,7 @@ export function adminMembership(session: Session | null) {
 
 /** Where "my courses" lives: Bodhin staff manage Bodhin's own courses from the admin portal. */
 export function coursesHome(session: Session | null) {
-  return adminMembership(session) && !educatorMembership(session) ? '/admin/content' : '/educator/courses';
+  return adminMembership(session) && !educatorMembership(session) ? '/admin/courses' : '/educator/courses';
 }
 
 /** Where a signed-in user lands. One login: role decides the area. */

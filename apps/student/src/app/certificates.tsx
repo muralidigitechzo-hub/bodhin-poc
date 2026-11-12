@@ -1,10 +1,12 @@
 /** Certificates & achievements (combined), with certificate viewer, share and public verification. */
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Linking, Pressable, ScrollView, Share, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { badges, certificates } from '@/api/client';
+import { ApiError, badges, certificates, certification } from '@/api/client';
+import { certificateHtml } from '@/core/certification';
+import { saveText } from '@/ui/calendarActions';
 import { useAuth } from '@/store/auth';
 import { useTheme } from '@/theme/ThemeProvider';
 import { layout, radius } from '@/theme/tokens';
@@ -12,7 +14,7 @@ import { TwoTone, Txt } from '@/ui/Txt';
 import { Button } from '@/ui/Button';
 import { TextField } from '@/ui/TextField';
 import { BottomSheet, IconButton, Pill, ProgressBar } from '@/ui/kit';
-import { BrandLogo } from '@/ui/Brand';
+import { CertificatePaper } from '@/ui/CertificatePaper';
 
 type Cert = ReturnType<typeof certificates.list>[number];
 type Tab = 'certificates' | 'badges' | 'verify';
@@ -26,7 +28,12 @@ export default function Certificates() {
   const [tab, setTab] = useState<Tab>(params.tab === 'badges' ? 'badges' : 'certificates');
   const [view, setView] = useState<Cert | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [rev, setRev] = useState(0);
+  // Pick up progress made before this screen was opened: a qualifying course raises its request now.
+  useFocusEffect(useCallback(() => { certification.sync(userId); setRev((r) => r + 1); }, [userId]));
+  void rev;
   const list = certificates.list(userId);
+  const wait = certification.mine(userId);
   const bs = badges.list(userId);
   const earned = bs.filter((b) => b.earned).length;
 
@@ -41,6 +48,20 @@ export default function Certificates() {
     } catch {
       flash(`Share link: ${url}`);
     }
+  };
+
+  const download = async (cert: Cert) => {
+    try {
+      const url = certificates.verifyUrl(cert.id);
+      await saveText(`${cert.id}.html`, certificateHtml(cert, session?.user.name ?? '', url, cert.template), 'text/html', `My Bodhin certificate: “${cert.title}”. Verify: ${url}`);
+      flash('Certificate downloaded. Open it and choose Print → Save as PDF.');
+    } catch {
+      flash('Could not save the certificate. Please try again.');
+    }
+  };
+  const askAgain = (id: string) => {
+    try { certification.reRequest(userId, id); flash('Requested again. You’ll be told when it’s reviewed.'); } catch (e) { flash(e instanceof ApiError ? e.message : 'Could not send the request.'); }
+    setRev((r) => r + 1);
   };
 
   return (
@@ -73,23 +94,53 @@ export default function Certificates() {
               ))}
             </View>
 
+            {tab === 'certificates' && wait.requests.map(({ r, title, by }) => (
+              <View key={r.id} style={[styles.req, { backgroundColor: c.surface, borderColor: r.status === 'rejected' ? c.danger : c.border }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name={r.status === 'pending' ? 'hourglass-outline' : 'alert-circle-outline'} size={24} color={r.status === 'pending' ? c.accent : c.danger} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Txt variant="bodyStrong" numberOfLines={2}>{title}</Txt>
+                    <Txt variant="caption" color={c.muted}>{r.status === 'pending' ? `Waiting for ${by} to approve · asked ${day(r.requestedAt)}` : `Not approved yet · ${day(r.decidedAt ?? r.requestedAt)}`}</Txt>
+                  </View>
+                  <Pill text={r.status === 'pending' ? 'Pending approval' : 'Needs changes'} tone={r.status === 'pending' ? 'info' : 'warning'} />
+                </View>
+                {r.status === 'rejected' && (
+                  <>
+                    {!!r.note && <Txt variant="caption" color={c.inkSoft}>“{r.note}”</Txt>}
+                    <Button title="Request again" size="md" variant="outline" onPress={() => askAgain(r.id)} />
+                  </>
+                )}
+              </View>
+            ))}
+
+            {tab === 'certificates' && wait.inProgress.map(({ course, st }) => (
+              <View key={course.id} style={[styles.req, { backgroundColor: c.surface, borderColor: c.border }]}>
+                <Txt variant="bodyStrong" numberOfLines={2}>{course.title}</Txt>
+                <ProgressBar pct={Math.min(100, Math.round((st.progressPct / 75) * 100))} height={6} />
+                <Txt variant="caption" color={c.muted}>Certificate: {st.eligible ? 'ready to request' : st.missing.join(' · ')}</Txt>
+              </View>
+            ))}
+
             {tab === 'certificates' &&
               (list.length === 0 ? (
-                <Txt color={c.muted} center style={{ paddingVertical: 30 }}>Complete a course to earn your first certificate.</Txt>
+                <Txt color={c.muted} center style={{ paddingVertical: 30 }}>{wait.requests.length || wait.inProgress.length ? 'Approved certificates will appear here.' : 'Finish 75% of a course and pass its quizzes to earn your first certificate.'}</Txt>
               ) : (
                 list.map((cert) => (
-                  <Pressable key={cert.id} onPress={() => setView(cert)} style={[styles.cert, { backgroundColor: c.surface, borderColor: c.border }]} accessibilityRole="button" accessibilityLabel={`Certificate: ${cert.title}`}>
-                    <View style={[styles.mini, { borderColor: c.accent, backgroundColor: '#FFFBF3' }]}>
-                      <Ionicons name="ribbon" size={26} color={c.accent} />
-                      <View style={{ width: 34, height: 3, backgroundColor: c.primaryDeep, borderRadius: 2 }} />
-                    </View>
-                    <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                      <Txt variant="bodyStrong" numberOfLines={2}>{cert.title}</Txt>
-                      <Txt variant="caption" color={c.muted}>Issued {day(cert.issuedAt)}</Txt>
-                      <Pill text="Verified" tone="success" icon="shield-checkmark" />
-                    </View>
+                  <View key={cert.id} style={[styles.cert, { backgroundColor: c.surface, borderColor: c.border }]}>
+                    <Pressable onPress={() => setView(cert)} style={styles.certMain} accessibilityRole="button" accessibilityLabel={`Certificate: ${cert.title}`}>
+                      <View style={[styles.mini, { borderColor: c.accent, backgroundColor: '#FFFBF3' }]}>
+                        <Ionicons name="ribbon" size={26} color={c.accent} />
+                        <View style={{ width: 34, height: 3, backgroundColor: c.primaryDeep, borderRadius: 2 }} />
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+                        <Txt variant="bodyStrong" numberOfLines={2}>{cert.title}</Txt>
+                        <Txt variant="caption" color={c.muted}>Issued {day(cert.issuedAt)}</Txt>
+                        <Pill text="Verified" tone="success" icon="shield-checkmark" />
+                      </View>
+                    </Pressable>
+                    <IconButton icon="download-outline" label={`Download ${cert.title}`} onPress={() => download(cert)} />
                     <IconButton icon="share-social-outline" label={`Share ${cert.title}`} onPress={() => share(cert)} />
-                  </Pressable>
+                  </View>
                 ))
               ))}
 
@@ -131,7 +182,7 @@ export default function Certificates() {
           view ? (
             <>
               <Button title="Share" variant="outline" size="md" iconLeft="share-social-outline" style={{ flex: 1 }} onPress={() => share(view)} />
-              <Button title="Save PDF" size="md" iconLeft="download-outline" style={{ flex: 1 }} onPress={() => flash('PDF saved to your phone')} />
+              <Button title="Download" size="md" iconLeft="download-outline" style={{ flex: 1 }} onPress={() => download(view)} />
             </>
           ) : undefined
         }
@@ -164,33 +215,16 @@ export default function Certificates() {
 
 /** The certificate itself (also the template for the PDF the backend generates). */
 function CertificateCard({ cert, name }: { cert: Cert; name: string }) {
-  const { c } = useTheme();
   return (
-    <View style={[styles.paper, { borderColor: c.primaryDeep }]} accessibilityLabel={`Certificate of completion for ${name}: ${cert.title}`}>
-      <View style={[styles.inset, { borderColor: c.accent }]}>
-        <BrandLogo size="sm" />
-        <Txt variant="title" color={c.ink} center style={{ letterSpacing: 2, fontSize: 20, marginTop: 8 }}>CERTIFICATE</Txt>
-        <Txt variant="caption" color={c.inkSoft} center style={{ letterSpacing: 3 }}>OF COMPLETION</Txt>
-        <Txt variant="caption" color={c.muted} center style={{ marginTop: 10 }}>This is to certify that</Txt>
-        <Txt variant="title" color={c.primaryDeep} center style={{ fontStyle: 'italic', fontSize: 24 }}>{name}</Txt>
-        <View style={{ height: 1, backgroundColor: c.border, alignSelf: 'stretch', marginVertical: 4 }} />
-        <Txt variant="caption" color={c.muted} center>has successfully completed</Txt>
-        <Txt variant="bodyStrong" center>{cert.title}</Txt>
-        <Txt variant="caption" color={c.inkSoft} center>{cert.program}</Txt>
-        <View style={styles.sigs}>
-          <View style={{ alignItems: 'center' }}>
-            <Txt variant="label" style={{ fontStyle: 'italic' }}>{cert.tutor}</Txt>
-            <Txt variant="caption" color={c.muted} style={{ fontSize: 10 }}>Instructor</Txt>
-          </View>
-          <Ionicons name="ribbon" size={34} color={c.accent} />
-          <View style={{ alignItems: 'center' }}>
-            <Txt variant="label">{day(cert.issuedAt)}</Txt>
-            <Txt variant="caption" color={c.muted} style={{ fontSize: 10 }}>Date of issue</Txt>
-          </View>
-        </View>
-        <Txt variant="caption" color={c.muted} center style={{ fontSize: 10 }}>Verify at thebodhin.com/verify · {cert.id}</Txt>
-      </View>
-    </View>
+    <CertificatePaper
+      template={cert.template}
+      recipientName={name}
+      courseTitle={cert.title}
+      program={cert.program}
+      tutorName={cert.tutor}
+      issuedAt={cert.issuedAt}
+      certId={cert.id}
+    />
   );
 }
 
@@ -223,7 +257,9 @@ const styles = StyleSheet.create({
   summary: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderRadius: 22 },
   seg: { flexDirection: 'row', padding: 4, borderRadius: radius.pill },
   segBtn: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radius.pill },
+  req: { padding: 12, borderRadius: radius.lg, borderWidth: 1.2, gap: 8 },
   cert: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10, borderRadius: radius.lg, borderWidth: 1 },
+  certMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 12 },
   mini: { width: 76, height: 58, borderRadius: 8, borderWidth: 2, alignItems: 'center', justifyContent: 'center', gap: 4 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   badge: { flexBasis: '46%', flexGrow: 1, alignItems: 'center', gap: 6, padding: 14, borderRadius: radius.lg, borderWidth: 1.4 },

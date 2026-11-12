@@ -44,7 +44,8 @@ export default function AdminMore() {
             )}
             {can(r, 'content.bodhin') && (
               <Group title="Bodhin content" icon="sparkles-outline">
-                <Row icon="layers-outline" title="Bodhin’s own courses" sub="Sold by Bodhin, 100% to Bodhin" onPress={() => router.push('/admin/content')} />
+                <Row icon="layers-outline" title="Bodhin’s own courses" sub="Sold by Bodhin, 100% to Bodhin" onPress={() => router.push('/admin/courses')} />
+                <Row icon="ribbon-outline" title="Certificate approvals" sub="Learners who finished Bodhin’s own courses" onPress={() => router.push('/admin/certificates')} />
                 <Row icon="star-outline" title="Marketplace curation" sub="Featured, banners, categories, Bodhin coupons" onPress={() => router.push('/admin/content')} />
               </Group>
             )}

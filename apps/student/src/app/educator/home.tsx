@@ -19,6 +19,7 @@ import { useTheme } from '@/theme/ThemeProvider';
 import { layout, radius } from '@/theme/tokens';
 import { Txt } from '@/ui/Txt';
 import { Button } from '@/ui/Button';
+import { MentorshipCard } from '@/ui/MentorshipCard';
 import { AppHeader, BottomSheet, ErrorState, Pill, ProgressBar, SectionHeader, Skeleton, useAsync } from '@/ui/kit';
 
 type Data = Awaited<ReturnType<typeof educator.dashboard>>;
@@ -70,7 +71,7 @@ export default function EducatorHome() {
         <View style={{ gap: 8 }}>
           {(
             [
-              ['layers', 'New course', 'Recorded, live or hybrid', () => router.push({ pathname: '/edu/course/[id]', params: { id: courseAdmin.create(userId) } }), data?.ctx.role === 'owner'],
+              ['layers', 'New course', 'Recorded, live or hybrid', () => router.push({ pathname: '/edu/course/[id]', params: { id: courseAdmin.create(userId) } }), true],
               ['people', 'New batch', 'Group students with a schedule', () => router.push('/edu/batch-new'), data?.ctx.ent.has('batches') && data?.ctx.role === 'owner'],
               ['help-circle', 'Quiz or assignment', 'Test students or collect their work', () => router.push('/edu/assess/new'), true],
               ['radio', 'Schedule live class', 'Pick a batch, date and time', () => router.push('/edu/schedule'), true],
@@ -147,6 +148,8 @@ function Body({ data, twoCol }: { data: Data; twoCol: boolean }) {
           <Kpi icon="document-text" tint="#F1ECFC" color="#7C3AED" value={String(attention.find((a) => a.key === 'grade')?.count ?? 0)} label="To grade" onPress={() => router.push('/edu/grading')} />
         )}
       </View>
+
+      <View style={{ marginTop: 14 }}><MentorshipCard /></View>
 
       {attention.length > 0 && (
         <>

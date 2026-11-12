@@ -63,7 +63,7 @@ export interface Course {
   outcomes: string[];
   projects: number;
   certificate: boolean;
-  art: { from: string; to: string; icon: string };
+  art: { from: string; to: string; icon: string; /** Uploaded thumbnail (data URL or file URI); replaces the generated artwork. */ image?: string };
   modules: Module[];
   publishedAt: string;
   /** Lifecycle. Undefined = published (seed data). Draft courses are visible only in the builder. */
@@ -74,7 +74,12 @@ export interface Course {
   /** Bodhin's note when a listing is rejected or needs changes. */
   moderationNote?: string;
   updatedAt?: string;
+  /** Unique, URL-safe name used in share links (`/course/<slug>`). Frozen once published. */
+  slug?: string;
 }
+
+/** What goes after `/course/` in a link: the slug, or the id for older courses. */
+export const courseRef = (c: Pick<Course, 'id' | 'slug'>) => c.slug ?? c.id;
 
 /** Listing review: 'changes' = Bodhin asked for edits before listing. */
 export type Moderation = Course['moderation'];

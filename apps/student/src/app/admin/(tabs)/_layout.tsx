@@ -1,4 +1,4 @@
-/** Admin tabs: Home · Inbox · Tenants · Money · More (bottom bar on phones, side rail ≥ 900px). */
+/** Admin tabs: Home · Courses · Inbox · Tenants · Money · More (bottom bar on phones, side rail ≥ 900px). */
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -6,6 +6,7 @@ import { useAppTabs } from '@/ui/responsive';
 
 const TABS = [
   ['index', 'Home', 'speedometer'],
+  ['courses', 'Courses', 'layers'],
   ['inbox', 'Inbox', 'file-tray-full'],
   ['tenants', 'Tenants', 'business'],
   ['money', 'Money', 'wallet'],

@@ -58,6 +58,7 @@ const NAV: Record<Area, [string, string, string, string[]][]> = {
   ],
   admin: [
     ['/admin', 'Home', 'speedometer', []],
+    ['/admin/courses', 'Courses', 'layers', []],
     ['/admin/inbox', 'Inbox', 'file-tray-full', ['/admin/review']],
     ['/admin/tenants', 'Tenants', 'business', ['/admin/tenant/']],
     ['/admin/money', 'Money', 'wallet', []],

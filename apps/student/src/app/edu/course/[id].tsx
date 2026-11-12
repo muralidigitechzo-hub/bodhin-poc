@@ -1,16 +1,17 @@
 /**
  * Course Builder — one screen, four steps: Details · Content · Pricing & where to sell · Publish.
  * Saves on every step. Private courses go live instantly; marketplace listings go to Bodhin review.
- * Tutors can edit details and content; pricing and publishing are owner-only.
+ * Owners and tutors both manage details, content, pricing, where to sell and publishing for their courses.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Share, StyleSheet, Switch, TextInput, View } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import { useLayout } from '@/ui/responsive';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError, COVER_ICONS, COVER_PRESETS, catalog, courseAdmin, platform } from '@/api/client';
-import { FORMAT_LABEL, LEVEL_LABEL, allLessons, inr, type Course, type Format, type Level } from '@/core/catalog';
+import { FORMAT_LABEL, LEVEL_LABEL, allLessons, courseRef, inr, type Course, type Format, type Level } from '@/core/catalog';
 import { paymentRoute, splitOrder } from '@/core/business';
 import { coursesHome, useAuth } from '@/store/auth';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -49,9 +50,9 @@ export default function CourseBuilder() {
   }, [userId, id]);
   useFocusEffect(load);
 
-  const flash = (x: string) => {
+  const flash = (x: string, ms = 2000) => {
     setToast(x);
-    setTimeout(() => setToast(null), 2000);
+    setTimeout(() => setToast(null), ms);
   };
 
   if (!meta || !c) {
@@ -62,7 +63,7 @@ export default function CourseBuilder() {
       </SafeAreaView>
     );
   }
-  const owner = meta.role === 'owner';
+  const owner = meta.role === 'owner' || meta.role === 'tutor'; // tutors price, choose where to sell and publish their own courses
   const set = (patch: Partial<Course>) => {
     setC((x) => (x ? { ...x, ...patch } : x));
     setErr(null);
@@ -113,9 +114,12 @@ export default function CourseBuilder() {
       const m = courseAdmin.get(userId, c.id);
       setMeta(m);
       setC(m!.course);
-      setDone(m);
+      // Close the builder and land on the course list, which shows the new status.
+      const msg = m?.state === 'in_review' ? 'Submitted. Bodhin will review it and it will show as Published once approved.' : 'Course published.';
+      router.replace({ pathname: coursesHome(session) as never, params: { msg } });
     } catch (e) {
       setErr((e as ApiError).message);
+      flash((e as ApiError).message, 6000); // the banner is at the top of the page, so also show it here
     } finally {
       setBusy(false);
     }
@@ -177,10 +181,10 @@ export default function CourseBuilder() {
         <ScrollView style={{ flex: 1 }} contentContainerStyle={[styles.scroll, isDesktop && { paddingHorizontal: 32, paddingTop: 8, paddingBottom: 48 }]} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <View style={[styles.inner, isDesktop && { maxWidth: 860 }]}>
             {err && <Banner text={err} />}
-            {step === 0 && <Details c={c} set={set} />}
+            {step === 0 && <Details c={c} set={set} userId={userId} />}
             {step === 1 && <Content c={c} userId={userId} reload={load} onError={setErr} />}
             {step === 2 && (owner ? <Pricing c={c} set={set} state={meta.state} payReady={meta.ctx.tenant.payments?.directGatewayStatus === 'active'} host={meta.ctx.host} /> : <OwnerOnly />)}
-            {step === 3 && <Publish c={c} meta={meta} owner={owner} goStep={setStep} agree={agree || meta.state !== 'draft'} setAgree={setAgree} />}
+            {step === 3 && <Publish c={c} set={set} meta={meta} owner={owner} goStep={setStep} agree={agree || meta.state !== 'draft'} setAgree={setAgree} />}
             {isDesktop && <View style={[styles.barInner, { maxWidth: undefined, marginTop: 12 }]}>{navBar}</View>}
           </View>
         </ScrollView>
@@ -204,6 +208,8 @@ export default function CourseBuilder() {
         title={done?.state === 'in_review' ? 'Published · in review' : 'Course published'}
         footer={
           <>
+            <Button title="Share link" variant="outline" iconLeft="link-outline" size="md" style={{ flex: 1 }} onPress={() => { const url = `https://${meta.ctx.host}/course/${courseRef(c)}`; Share.share({ message: `${c.title}
+${url}`, url }).catch(() => flash(`Link: ${url}`)); }} />
             <Button title="Preview" variant="outline" size="md" style={{ flex: 1 }} onPress={() => { setDone(null); router.push({ pathname: '/course/[id]', params: { id: c.id } }); }} />
             <Button title="My courses" size="md" style={{ flex: 1 }} onPress={() => { setDone(null); router.replace(coursesHome(session) as never); }} />
           </>
@@ -225,10 +231,45 @@ export default function CourseBuilder() {
 }
 
 /* ───────── Step 1: Details ───────── */
-function Details({ c, set }: { c: Course; set: (p: Partial<Course>) => void }) {
+function Details({ c, set, userId }: { c: Course; set: (p: Partial<Course>) => void; userId: string }) {
   const { c: t } = useTheme();
   const cats = catalog.allCategories().filter((k) => k.id !== 'all');
   const outcomes = c.outcomes.length ? c.outcomes : [''];
+  const [newCat, setNewCat] = useState<string | null>(null); // null = closed
+  const [catErr, setCatErr] = useState<string | null>(null);
+  const [imgErr, setImgErr] = useState<string | null>(null);
+  const addCat = () => {
+    try {
+      set({ categoryId: catalog.addCategory(userId, newCat ?? '') });
+      setNewCat(null);
+      setCatErr(null);
+    } catch (e) {
+      setCatErr((e as ApiError).message);
+    }
+  };
+  const pickImage = async () => {
+    setImgErr(null);
+    try {
+      const r = await DocumentPicker.getDocumentAsync({ type: ['image/jpeg', 'image/png', 'image/webp'], multiple: false, copyToCacheDirectory: true });
+      if (r.canceled) return;
+      const f = r.assets[0];
+      if (f.size && f.size > 1.5 * 1024 * 1024) return setImgErr('Image is too large. Use a JPG, PNG or WebP under 1.5 MB.');
+      let uri = f.uri;
+      if (Platform.OS === 'web') {
+        // blob: URLs die on reload, so keep the picture itself.
+        const blob = await (await fetch(f.uri)).blob();
+        uri = await new Promise<string>((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(String(fr.result));
+          fr.onerror = () => rej(new Error('read'));
+          fr.readAsDataURL(blob);
+        });
+      }
+      set({ art: { ...c.art, image: uri } });
+    } catch {
+      setImgErr('Couldn’t read that image. Try another file.');
+    }
+  };
   return (
     <>
       <Section icon="information-circle-outline" title="Course details" sub="This is what learners see first.">
@@ -237,7 +278,14 @@ function Details({ c, set }: { c: Course; set: (p: Partial<Course>) => void }) {
         <Field label="Category *">
           <View style={styles.wrap}>
             {cats.map((k) => <Chip key={k.id} label={k.name} icon={k.icon as any} active={c.categoryId === k.id} onPress={() => set({ categoryId: k.id })} />)}
+            <Chip label="Add category" icon="add" active={newCat !== null} onPress={() => setNewCat(newCat === null ? '' : null)} />
           </View>
+          {newCat !== null && (
+            <View style={{ gap: 8 }}>
+              <TextField label="New category name" placeholder="e.g. Java Programming" value={newCat} onChangeText={(v) => { setNewCat(v.slice(0, 40)); setCatErr(null); }} error={catErr ?? undefined} />
+              <Button title="Add and select" size="md" iconLeft="add" onPress={addCat} />
+            </View>
+          )}
         </Field>
         <Field label="Level *">
           <View style={styles.wrap}>
@@ -257,6 +305,14 @@ function Details({ c, set }: { c: Course; set: (p: Partial<Course>) => void }) {
 
       <Section icon="image-outline" title="Cover" sub="Shown on cards and the course page.">
         <CourseArt course={c} height={150} rounded={18} showTitle />
+        <Field label="Thumbnail image">
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Button title={c.art.image ? 'Change image' : 'Upload image'} variant="outline" size="md" iconLeft="cloud-upload-outline" style={{ flex: 1 }} onPress={pickImage} />
+            {c.art.image && <Button title="Remove" variant="outline" size="md" onPress={() => set({ art: { from: c.art.from, to: c.art.to, icon: c.art.icon } })} />}
+          </View>
+          {imgErr && <Txt variant="caption" color={t.danger}>{imgErr}</Txt>}
+          <Txt variant="caption" color={t.muted}>Best at 1280 × 720. JPG, PNG or WebP, under 1.5 MB. Without an image, the colour and icon below are used.</Txt>
+        </Field>
         <Field label="Colour">
           <View style={styles.wrap}>
             {COVER_PRESETS.map((p) => {
@@ -284,7 +340,6 @@ function Details({ c, set }: { c: Course; set: (p: Partial<Course>) => void }) {
             })}
           </View>
         </Field>
-        <Txt variant="caption" color={t.muted}>Custom image upload (1280 × 720, JPG/PNG/WebP, max 5 MB) connects to media storage in production.</Txt>
       </Section>
 
       <Section icon="flag-outline" title="What learners will get" sub="Add 3–6 outcomes. Start each with a verb.">
@@ -576,7 +631,7 @@ function OwnerOnly() {
 }
 
 /* ───────── Step 4: Publish ───────── */
-function Publish({ c, meta, owner, goStep, agree, setAgree }: { c: Course; meta: NonNullable<ReturnType<typeof courseAdmin.get>>; owner: boolean; goStep: (s: number) => void; agree: boolean; setAgree: (v: boolean) => void }) {
+function Publish({ c, set, meta, owner, goStep, agree, setAgree }: { c: Course; set: (p: Partial<Course>) => void; meta: NonNullable<ReturnType<typeof courseAdmin.get>>; owner: boolean; goStep: (s: number) => void; agree: boolean; setAgree: (v: boolean) => void }) {
   const { c: t } = useTheme();
   const list = useMemo(() => courseAdmin.checklist(c, meta.ctx.tenant.payments), [c, meta]);
   const doneCount = list.filter((x) => x.ok || x.optional).length;
@@ -613,12 +668,15 @@ function Publish({ c, meta, owner, goStep, agree, setAgree }: { c: Course; meta:
       <Section icon="globe-outline" title="Where it will appear">
         <View style={styles.where}>
           <Ionicons name="checkmark-circle" size={20} color={t.success} />
-          <Txt style={{ flex: 1 }}><Txt variant="bodyStrong">Your site</Txt> · {meta.ctx.host}/course/{c.id}</Txt>
+          <Txt style={{ flex: 1 }}><Txt variant="bodyStrong">Your site</Txt> · {meta.ctx.host}/course/{courseRef(c)}</Txt>
         </View>
         <View style={styles.where}>
           <Ionicons name={listing ? 'hourglass-outline' : 'remove-circle-outline'} size={20} color={listing ? t.warning : t.muted} />
           <Txt style={{ flex: 1 }}><Txt variant="bodyStrong">Bodhin marketplace</Txt> · {listing ? (meta.state === 'listed' || meta.state === 'promoted' ? 'listed' : 'after Bodhin review, usually 24–48 h') : 'not listed (private)'}</Txt>
         </View>
+        {meta.state === 'draft' && owner && (
+          <Button title={listing ? 'Sell only to my students instead' : 'List on Bodhin marketplace'} variant="outline" size="md" iconLeft={listing ? 'lock-closed-outline' : 'storefront-outline'} onPress={() => { set({ visibility: listing ? 'private' : 'public' }); }} />
+        )}
         {listing && meta.state === 'draft' && (
           <Checkbox checked={agree} onChange={setAgree} label="Agree to marketplace guidelines">
             <Txt variant="label" color={t.inkSoft}>The content is mine or licensed, follows Bodhin’s marketplace guidelines, and makes no guaranteed-income claims.</Txt>

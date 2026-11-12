@@ -233,6 +233,9 @@ function Workspace() {
           <View style={{ flex: 1 }}>
             <Txt variant="bodyStrong" color={c.success}>All tests passed!</Txt>
             <Txt variant="caption" color={c.inkSoft}>{won > 0 ? `+${won} points added to your profile.` : 'You had already solved this one.'}</Txt>
+            {challenge && playground.daily(userId).challenge.id === challenge.id && (
+              <Txt variant="caption" color={c.success} accessibilityLiveRegion="polite">🔥 {playground.daily(userId).streak.current}-day streak · today’s daily challenge done</Txt>
+            )}
           </View>
           <Button title="More challenges" size="md" variant="outline" onPress={() => router.replace('/playground')} />
         </View>

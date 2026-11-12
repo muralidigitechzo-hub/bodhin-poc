@@ -17,6 +17,7 @@ import { PLANS, type Plan, type PlanId } from '@/core/plans';
 import { attendancePct, batchStatus, generateSessions, weeksBetween, type Announcement, type AttendanceMark, type Batch, type Mark, type MemberStatus, type Person } from '@/core/batch';
 import type { ClassSession, LiveSummary } from '@/core/batch';
 import { joinWindow } from '@/live/protocol';
+import { eligibility, isHexColor, resolveCertTemplate, type CertRequest, type CertTemplate, type Eligibility, type QuizStanding } from '@/core/certification';
 import { rubricOf, score as scoreQuiz, type Assessment, type AssessStatus, type Attempt, type Question, type Submission } from '@/core/assess';
 
 /** Apply educator-created/edited courses on top of the demo catalogue (in place, so every reader sees them). */
@@ -210,6 +211,20 @@ export const catalog = {
   categories: () => (db.curation.categories ? db.curation.categories.filter((c) => !c.hidden) : seedCategories),
   /** Including hidden ones (course builder must still show a course's current category). */
   allCategories: () => db.curation.categories ?? seedCategories,
+  /** Any educator can add a category for their course; it becomes visible to everyone on Explore. */
+  addCategory(userId: string, name: string) {
+    if (!educator.context(userId)) throw new ApiError('forbidden', 'Only educators can add categories.');
+    const n = name.trim();
+    if (n.length < 2 || n.length > 40) throw new ApiError('name', 'Category name must be 2–40 characters.', 'name');
+    const cats = db.curation.categories ?? seedCategories.map((c) => ({ ...c, hidden: false }));
+    const id = n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'category';
+    const hit = cats.find((x) => x.id === id || x.name.toLowerCase() === n.toLowerCase());
+    if (hit) return hit.id; // already exists: just use it
+    cats.push({ id, name: n, icon: 'bookmark-outline', hidden: false });
+    db.curation.categories = cats;
+    persist();
+    return id;
+  },
   tutor: (id: string) => seedTutors.find((t) => t.id === id) ?? null,
 
   async search(q: CourseQuery, tenantId: string | null) {
@@ -235,8 +250,9 @@ export const catalog = {
     };
   },
 
-  get(id: string) {
-    const c = seedCourses.find((x) => x.id === id);
+  /** Opens a course by id or by its share-link slug. */
+  get(idOrSlug: string) {
+    const c = seedCourses.find((x) => x.id === idOrSlug) ?? seedCourses.find((x) => x.slug === idOrSlug);
     return c ? { course: c, tutor: tutorOf(c) } : null;
   },
 
@@ -316,7 +332,7 @@ export const reviews = {
     const mine = db.reviews.filter((r) => r.courseId === courseId);
     const list = [...mine, ...seedReviews.filter((r) => r.courseId === courseId)].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const count = c.ratingCount + mine.length;
-    const avg = (c.rating * c.ratingCount + mine.reduce((s, r) => s + r.rating, 0)) / count;
+    const avg = count ? (c.rating * c.ratingCount + mine.reduce((s, r) => s + r.rating, 0)) / count : 0; // a brand-new course has no ratings yet
     return { list, avg: Math.round(avg * 10) / 10, count, split: ratingSplit(c.rating, c.ratingCount, mine) };
   },
   mine: (userId: string, courseId: string) => db.reviews.find((r) => r.userId === userId && r.courseId === courseId) ?? null,
@@ -518,7 +534,9 @@ export const player = {
     const e = db.enrollments.find((x) => x.userId === userId && x.courseId === courseId);
     const lessons = allLessons(course);
     const lesson = lessons.find((l) => l.id === lessonId) ?? (e ? nextLesson(course, e).lesson : lessons[0]);
-    if (!e && !lesson.preview) throw new ApiError('locked', 'Enroll in this course to watch this lesson.');
+    // Bodhin staff reviewing a listing, and the course's own educators, can watch every lesson.
+    const reviewer = !!adminRoleOf(userId) || !!canManage(userId, course.id);
+    if (!e && !reviewer && !lesson.preview) throw new ApiError('locked', 'Enroll in this course to watch this lesson.');
     const i = lessons.indexOf(lesson);
     const module = course.modules.find((m) => m.lessons.includes(lesson))!;
     if (e) {
@@ -535,6 +553,7 @@ export const player = {
       prev: lessons[i - 1] ?? null,
       next: lessons[i + 1] ?? null,
       enrolled: !!e,
+      reviewer,
       completed: new Set(e?.completedLessonIds ?? []),
       position: db.positions[`${userId}:${lesson.id}`] ?? 0,
       streamUrl: `https://media.thebodhin.com/hls/${lesson.id}/master.m3u8?sig=demo`, // placeholder
@@ -554,6 +573,7 @@ export const player = {
     if (!done && has) e.completedLessonIds = e.completedLessonIds.filter((x) => x !== lessonId);
     e.lastActiveAt = new Date().toISOString();
     persist();
+    if (done) certification.evaluate(userId, courseId);
   },
 
   isBookmarked: (userId: string, lessonId: string) => db.bookmarks.some((b) => b.userId === userId && b.lessonId === lessonId),
@@ -875,6 +895,7 @@ export const assessments = {
     // Passing a curriculum quiz completes that lesson.
     if (a.lessonId && s.scorePct >= a.passPct) player.setComplete(userId, a.courseId, a.lessonId, true);
     persist();
+    if (a.kind !== 'assignment') certification.evaluate(userId, a.courseId); // a passed quiz can be the last thing missing
     return t;
   },
 
@@ -1013,15 +1034,15 @@ export const payments = {
 };
 
 export const certificates = {
-  /** Seeded certificates + one auto-issued for every completed course that offers a certificate. */
+  /** Certificates that were issued: seeded ones, and every request the course creator approved (see `certification`). */
   list(userId: string) {
-    const issued = db.certificates.filter((c) => c.userId === userId);
-    const auto = db.enrollments
-      .filter((e) => e.userId === userId)
-      .map((e) => ({ e, c: seedCourses.find((x) => x.id === e.courseId)! }))
-      .filter(({ e, c }) => c.certificate && progressOf(c, e).pct === 100 && !issued.some((i) => i.courseId === c.id))
-      .map(({ c }) => ({ id: `BODHIN-${c.id.slice(2, 6).toUpperCase()}-${new Date().getFullYear()}-${String(500 + c.id.length).padStart(4, '0')}`, userId, courseId: c.id, title: c.title, program: 'Course Completion', issuedAt: new Date().toISOString(), weeks: Math.max(2, Math.round(allLessons(c).length / 4)), tutor: tutorOf(c).name }));
-    return [...auto, ...issued].sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+    return db.certificates
+      .filter((c) => c.userId === userId)
+      .map((c) => {
+        const co = c.courseId ? seedCourses.find((x) => x.id === c.courseId) : undefined;
+        return { ...c, template: c.template ?? (co ? db.certTemplates[co.tenantId] : undefined) };
+      })
+      .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
   },
   get: (userId: string, id: string) => certificates.list(userId).find((c) => c.id === id) ?? null,
   /** Public verification (anyone with the ID). Real: GET thebodhin.com/verify/<id>. */
@@ -1033,6 +1054,215 @@ export const certificates = {
     return { valid: true as const, name: db.users.find((u) => u.id === c.userId)?.name ?? 'Learner', title: c.title, issuedAt: c.issuedAt };
   },
   verifyUrl: (id: string) => `https://thebodhin.com/verify/${id}`,
+};
+
+/* ───────────────────────── Certification: request → creator approves → learner downloads ───────────────────────── */
+
+type CertScope = 'educator' | 'admin';
+const isBodhinCourse = (c: Course) => c.tenantId === db.platformConfig.bodhinTenantId;
+const certIssued = (userId: string, c: Course) => db.certificates.some((x) => x.userId === userId && (x.courseId === c.id || (!x.courseId && x.title === c.title)));
+
+/** Quizzes and exams of the course this learner has to pass (batch-only ones count only for that batch's learners). */
+function requiredQuizzes(userId: string, courseId: string): QuizStanding[] {
+  const myBatches = new Set(db.people.filter((p) => p.userId === userId).flatMap((p) => p.courses.map((c) => c.batchId).filter(Boolean)));
+  return ASSESSMENTS.filter((a) => a.courseId === courseId && a.kind !== 'assignment' && a.status !== 'draft' && (!a.batchId || myBatches.has(a.batchId)))
+    .map((a) => ({ id: a.id, title: a.title, passPct: a.passPct, best: bestAttempt(userId, a.id)?.scorePct ?? null }));
+}
+function certStanding(userId: string, c: Course) {
+  const e = db.enrollments.find((x) => x.userId === userId && x.courseId === c.id);
+  return e ? eligibility(progressOf(c, e).pct, requiredQuizzes(userId, c.id)) : null;
+}
+function certCertId(c: Course) {
+  const base = `BODHIN-${c.id.replace(/^c_/, '').replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase() || 'COURSE'}-${new Date().getFullYear()}`;
+  let n = 1000 + db.certificates.length;
+  while (db.certificates.some((x) => x.id === `${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+/** Who is told about a request: Bodhin staff who manage Bodhin content, or the workspace owner and the tutors assigned to the course. */
+function certApprovers(c: Course): string[] {
+  if (isBodhinCourse(c)) {
+    return [...new Set(db.memberships.filter((m) => (m.role === 'super_admin' || m.role === 'moderator') && ROLE_PERMS[m.role as AdminRole]?.includes('content.bodhin')).map((m) => m.userId))];
+  }
+  const owner = db.tenants.find((t) => t.id === c.tenantId)?.ownerUserId;
+  return [...new Set([...(owner ? [owner] : []), ...db.tutorAssignments.filter((a) => a.courseId === c.id).map((a) => a.userId)])];
+}
+/** The courses whose requests this reviewer decides. Throws when the user has no rights for the scope. */
+function certCoursesFor(userId: string, scope: CertScope): Set<string> {
+  if (scope === 'admin') {
+    adminGuard(userId, 'content.bodhin');
+    return new Set(seedCourses.filter(isBodhinCourse).map((c) => c.id));
+  }
+  if (!educator.context(userId)) throw new ApiError('forbidden', 'Only educators can review certificates.');
+  return new Set(educator.courses(userId).filter((c) => !isBodhinCourse(c)).map((c) => c.id));
+}
+function certTenantFor(userId: string, scope: CertScope): { tenantId: string; orgName: string } {
+  if (scope === 'admin') {
+    adminGuard(userId, 'content.bodhin');
+    return { tenantId: db.platformConfig.bodhinTenantId, orgName: 'BODHIN' };
+  }
+  const ctx = educator.context(userId);
+  if (!ctx) throw new ApiError('forbidden', 'Only educators can manage certificate templates.');
+  return { tenantId: ctx.tenant.id, orgName: ctx.tenant.branding.displayName || 'BODHIN' };
+}
+const certLink = (scope: CertScope) => ({ pathname: scope === 'admin' ? '/admin/certificates' : '/edu/certificates' });
+
+export const certification = {
+  /**
+   * Raises a request when the learner qualifies: enrolled (bought) + ≥75% of lessons + every course quiz passed.
+   * Called after a lesson is completed and after a quiz is submitted. Never creates a second open request,
+   * never re-asks after a decline (the learner asks again themselves), never duplicates an issued certificate.
+   */
+  evaluate(userId: string, courseId: string): CertRequest | null {
+    const c = seedCourses.find((x) => x.id === courseId);
+    if (!c || !c.certificate || !isPublished(c)) return null;
+    if (db.certRequests.some((r) => r.userId === userId && r.courseId === courseId)) return null;
+    if (certIssued(userId, c)) return null;
+    const st = certStanding(userId, c);
+    if (!st?.eligible) return null;
+    return certification.raise(userId, c, st);
+  },
+
+  /** Creates the request and tells the creator and the learner. */
+  raise(userId: string, c: Course, st: Eligibility): CertRequest {
+    const r: CertRequest = { id: uid('cr'), userId, courseId: c.id, tenantId: c.tenantId, status: 'pending', requestedAt: new Date().toISOString(), progressPct: st.progressPct, quizPct: st.quizPct, quizzes: st.quizzes.length };
+    db.certRequests.push(r);
+    const name = db.users.find((u) => u.id === userId)?.name ?? 'A learner';
+    const scope: CertScope = isBodhinCourse(c) ? 'admin' : 'educator';
+    certApprovers(c).forEach((id) => notifyUser(id, 'system', 'Certificate approval needed', `${name} completed ${st.progressPct}% of “${c.title}”${st.quizzes.length ? ` and passed ${st.quizzes.length === 1 ? 'the quiz' : `all ${st.quizzes.length} quizzes`}` : ''}. Review the certificate request.`, certLink(scope)));
+    notifyUser(userId, 'system', 'Certificate requested', `You qualify for a certificate for “${c.title}”. ${isBodhinCourse(c) ? 'Bodhin' : 'Your tutor'} will review it, and you’ll be told when it’s ready.`, { pathname: '/certificates' });
+    persist();
+    return r;
+  },
+
+  /** Checks every course the learner has bought (used when they open Certificates, so earlier progress is picked up). */
+  sync(userId: string) {
+    db.enrollments.filter((e) => e.userId === userId).forEach((e) => certification.evaluate(userId, e.courseId));
+  },
+
+  /** A learner whose request was declined may ask again, as long as they still qualify. */
+  reRequest(userId: string, requestId: string) {
+    const r = db.certRequests.find((x) => x.id === requestId && x.userId === userId);
+    if (!r) throw new ApiError('not_found', 'Request not found.');
+    if (r.status !== 'rejected') throw new ApiError('state', r.status === 'approved' ? 'This certificate is already approved.' : 'This request is already waiting for review.');
+    const c = seedCourses.find((x) => x.id === r.courseId);
+    if (!c || !c.certificate) throw new ApiError('state', 'This course no longer offers a certificate.');
+    const st = certStanding(userId, c);
+    if (!st?.eligible) throw new ApiError('not_eligible', st?.missing[0] ?? 'You no longer meet the requirements.');
+    db.certRequests = db.certRequests.filter((x) => x.id !== r.id);
+    return certification.raise(userId, c, st);
+  },
+
+  /** Learner view: waiting / declined requests, and the courses still short of the bar. */
+  mine(userId: string) {
+    const requests = db.certRequests.filter((r) => r.userId === userId && r.status !== 'approved').map((r) => {
+      const c = seedCourses.find((x) => x.id === r.courseId);
+      return { r, title: c?.title ?? 'Course', by: c && isBodhinCourse(c) ? 'Bodhin' : 'your tutor' };
+    }).sort((a, b) => b.r.requestedAt.localeCompare(a.r.requestedAt));
+    const open = new Set(db.certRequests.filter((r) => r.userId === userId).map((r) => r.courseId));
+    const inProgress = db.enrollments.filter((e) => e.userId === userId).map((e) => seedCourses.find((c) => c.id === e.courseId)!)
+      .filter((c) => c && c.certificate && isPublished(c) && !open.has(c.id) && !certIssued(userId, c))
+      .map((c) => ({ course: c, st: certStanding(userId, c)! }))
+      .filter((x) => x.st && x.st.progressPct > 0);
+    return { requests, inProgress };
+  },
+
+  /** Reviewer view. Educators see their workspace's courses; Admin sees Bodhin's own. */
+  queue(userId: string, scope: CertScope) {
+    const mine = certCoursesFor(userId, scope);
+    const rows = db.certRequests.filter((r) => mine.has(r.courseId)).map((r) => ({
+      r,
+      course: seedCourses.find((c) => c.id === r.courseId)!,
+      student: db.users.find((u) => u.id === r.userId)?.name ?? 'Learner',
+      eligible: (() => { const c = seedCourses.find((x) => x.id === r.courseId); return !!c && !!certStanding(r.userId, c)?.eligible; })(),
+    })).filter((x) => x.course);
+    return {
+      pending: rows.filter((x) => x.r.status === 'pending').sort((a, b) => a.r.requestedAt.localeCompare(b.r.requestedAt)),
+      decided: rows.filter((x) => x.r.status !== 'pending').sort((a, b) => (b.r.decidedAt ?? '').localeCompare(a.r.decidedAt ?? '')).slice(0, 20),
+    };
+  },
+  pendingCount(userId: string, scope: CertScope) {
+    try { return certification.queue(userId, scope).pending.length; } catch { return 0; }
+  },
+
+  /** Returns the workspace's certificate template (custom or default) plus whether it has been customized. */
+  template(userId: string, scope: CertScope) {
+    const { tenantId, orgName } = certTenantFor(userId, scope);
+    const saved = db.certTemplates[tenantId];
+    return { template: resolveCertTemplate(saved ?? { orgName }), customized: !!saved };
+  },
+
+  /** Saves custom certificate template (background image, text labels, and colors) for the workspace. */
+  saveTemplate(userId: string, scope: CertScope, input: Partial<CertTemplate>) {
+    const { tenantId, orgName } = certTenantFor(userId, scope);
+    for (const [label, val] of [
+      ['Primary color', input.primaryColor],
+      ['Accent color', input.accentColor],
+      ['Background color', input.bgColor],
+      ['Text color', input.textColor],
+    ] as const) {
+      if (val !== undefined && !isHexColor(val)) throw new ApiError('invalid', `${label} must be a valid hex color like #0B3B73.`);
+    }
+    const clean = (v: string | undefined, max: number) => (v ?? '').trim().slice(0, max);
+    const next = resolveCertTemplate({
+      backgroundImage: input.backgroundImage || undefined,
+      orgName: clean(input.orgName, 60) || orgName,
+      heading: clean(input.heading, 40),
+      subheading: clean(input.subheading, 60),
+      introText: clean(input.introText, 120),
+      completionText: clean(input.completionText, 120),
+      instructorLabel: clean(input.instructorLabel, 40),
+      primaryColor: input.primaryColor,
+      accentColor: input.accentColor,
+      bgColor: input.bgColor,
+      textColor: input.textColor,
+    });
+    db.certTemplates[tenantId] = next;
+    if (scope === 'admin') audit(userId, 'certificate.template', { kind: 'config', id: tenantId, label: 'Bodhin certificate template' }, `Updated certificate template (${next.heading})`);
+    persist();
+    return { template: next, customized: true };
+  },
+
+  /** Resets the workspace's certificate template back to default. */
+  resetTemplate(userId: string, scope: CertScope) {
+    const { tenantId, orgName } = certTenantFor(userId, scope);
+    delete db.certTemplates[tenantId];
+    if (scope === 'admin') audit(userId, 'certificate.template.reset', { kind: 'config', id: tenantId, label: 'Bodhin certificate template' }, 'Reset certificate template to default');
+    persist();
+    return { template: resolveCertTemplate({ orgName }), customized: false };
+  },
+
+  async decide(userId: string, scope: CertScope, requestId: string, decision: 'approve' | 'reject', note = '') {
+    await wait(350);
+    const mine = certCoursesFor(userId, scope);
+    const r = db.certRequests.find((x) => x.id === requestId);
+    if (!r || !mine.has(r.courseId)) throw new ApiError('not_found', 'This request isn’t in your queue.');
+    if (r.status !== 'pending') throw new ApiError('state', `This request was already ${r.status}.`);
+    const c = seedCourses.find((x) => x.id === r.courseId);
+    if (!c) throw new ApiError('state', 'This course no longer exists.');
+    const reviewer = db.users.find((u) => u.id === userId);
+    const learner = db.users.find((u) => u.id === r.userId);
+    const text = note.trim().slice(0, 300);
+    if (decision === 'reject' && !text) throw new ApiError('note', 'Tell the learner what to fix before declining.', 'note');
+    const now = new Date().toISOString();
+    if (decision === 'approve') {
+      const st = certStanding(r.userId, c);
+      if (!c.certificate) throw new ApiError('state', 'This course no longer offers a certificate.');
+      if (!st?.eligible) throw new ApiError('not_eligible', `The learner no longer qualifies: ${st?.missing[0] ?? 'not enrolled'}.`);
+      if (certIssued(r.userId, c)) throw new ApiError('state', 'A certificate was already issued for this course.');
+      const id = certCertId(c);
+      const tpl = db.certTemplates[c.tenantId];
+      db.certificates.push({ id, userId: r.userId, courseId: c.id, title: c.title, program: 'Course Completion', issuedAt: now, weeks: Math.max(2, Math.round(allLessons(c).length / 4)), tutor: tutorOf(c)?.name ?? reviewer?.name ?? 'Bodhin', template: tpl ? { ...tpl } : undefined });
+      Object.assign(r, { status: 'approved', decidedAt: now, decidedBy: userId, decidedByName: reviewer?.name, note: text || undefined, certId: id });
+      notifyUser(r.userId, 'system', 'Certificate approved', `Your certificate for “${c.title}” is ready to download.${text ? ` “${text}”` : ''}`, { pathname: '/certificates' });
+      db.activity.push({ id: uid('a'), tenantId: c.tenantId, kind: 'certificate', text: `Certificate approved for ${learner?.name ?? 'a learner'} · “${c.title}”`, at: now });
+    } else {
+      Object.assign(r, { status: 'rejected', decidedAt: now, decidedBy: userId, decidedByName: reviewer?.name, note: text });
+      notifyUser(r.userId, 'system', 'Certificate not approved yet', `“${c.title}”: ${text}`, { pathname: '/certificates' });
+    }
+    if (scope === 'admin') audit(userId, decision === 'approve' ? 'certificate.approve' : 'certificate.reject', { kind: 'course', id: c.id, label: c.title }, `${decision === 'approve' ? 'Approved' : 'Declined'} certificate for ${learner?.name ?? 'learner'}`);
+    persist();
+    return r;
+  },
 };
 
 export const badges = {
@@ -1174,6 +1404,7 @@ export const educator = {
     const stats = db.tenantStats[ctx.tenant.id] ?? { students: 0, studentsDelta: 0, completion: { completed: 0, inProgress: 0, notStarted: 0 }, earningsHistory: [] };
     const attention = [
       { key: 'grade', icon: 'document-text', label: 'Assignments to grade', count: toGrade, href: '/edu/grading' },
+      { key: 'certs', icon: 'ribbon', label: 'Certificates to approve', count: certification.pendingCount(userId, 'educator'), href: '/edu/certificates' },
       { key: 'doubts', icon: 'chatbubbles', label: 'Student doubts waiting', count: doubtCount, href: '/edu/doubts' },
       { key: 'review', icon: 'hourglass', label: 'Courses in Bodhin review', count: inReview, href: '/educator/courses' },
       lowAttendance(userId),
@@ -1218,8 +1449,18 @@ function ensureTutorProfile(tenantId: string, userId: string) {
   return t;
 }
 
+const courseSlugify = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50).replace(/-+$/, '');
+/** Unique per course across the platform, so one link opens exactly one course. */
+function freeCourseSlug(title: string, id: string) {
+  const base = courseSlugify(title) || 'course';
+  let s = base;
+  for (let n = 2; seedCourses.some((x) => x.slug === s && x.id !== id); n++) s = `${base}-${n}`;
+  return s;
+}
+
 function saveCourse(c: Course) {
   c.updatedAt = new Date().toISOString();
+  if (!c.slug || !isPublished(c)) c.slug = freeCourseSlug(c.title, c.id); // drafts follow the title; a published link never changes
   const i = db.courses.findIndex((x) => x.id === c.id);
   i >= 0 ? (db.courses[i] = c) : db.courses.push(c);
   const j = seedCourses.findIndex((x) => x.id === c.id);
@@ -1268,12 +1509,18 @@ export const courseAdmin = {
     return { course: r.course, role: r.ctx.role, state: courseState(r.course), ctx: r.ctx };
   },
 
-  /** Creates an empty draft and returns its id (owners only). */
+  /**
+   * Creates an empty draft and returns its id. Owners and tutors can create; a tutor's draft is
+   * assigned to them automatically, and pricing/publishing stay with the owner.
+   */
   create(userId: string) {
     const ctx = educator.context(userId);
-    if (!ctx || ctx.role !== 'owner') throw new ApiError('forbidden', 'Only the workspace owner can create courses.');
-    const tutor = ensureTutorProfile(ctx.tenant.id, userId);
+    if (!ctx) throw new ApiError('forbidden', 'You need an educator workspace to create courses.');
+    // The instructor profile belongs to the workspace, so name it after the owner, not whoever creates first.
+    const ownerId = db.memberships.find((m) => m.tenantId === ctx.tenant.id && m.role === 'owner')?.userId ?? userId;
+    const tutor = ensureTutorProfile(ctx.tenant.id, ownerId);
     const id = uid('c');
+    if (ctx.role === 'tutor') db.tutorAssignments.push({ userId, courseId: id });
     const cover = COVER_PRESETS[Math.floor(Math.random() * COVER_PRESETS.length)];
     saveCourse({
       id, tenantId: ctx.tenant.id, tutorId: tutor.id, title: '', subtitle: '', description: '', categoryId: '', collections: [], level: 'beginner', format: 'recorded',
@@ -1287,8 +1534,6 @@ export const courseAdmin = {
   update(userId: string, id: string, patch: Partial<Course>) {
     const r = canManage(userId, id);
     if (!r) throw new ApiError('forbidden', 'You can’t edit this course.');
-    const ownerOnly: (keyof Course)[] = ['priceInr', 'compareAtInr', 'offerEndsAt', 'visibility', 'accessMonths', 'drip', 'format', 'status'];
-    if (r.ctx.role === 'tutor' && ownerOnly.some((k) => k in patch)) throw new ApiError('forbidden', 'Only the workspace owner can change pricing and publishing.');
     // Fields an educator must never set directly: Bodhin moderation, social proof, ownership,
     // and going live (publish() runs the checklist). Server: same rule in the courses trigger.
     const { moderation: _m, moderationNote: _mn, rating: _r, ratingCount: _rc, students: _s, tenantId: _t, id: _id, ...safe } = patch;
@@ -1442,7 +1687,7 @@ export const courseAdmin = {
   async publish(userId: string, id: string) {
     await wait(700);
     const r = canManage(userId, id);
-    if (!r || r.ctx.role !== 'owner') throw new ApiError('forbidden', 'Only the workspace owner can publish.');
+    if (!r) throw new ApiError('forbidden', 'You can’t publish this course.');
     const missing = courseAdmin.checklist(r.course, r.ctx.tenant.payments).filter((x) => !x.ok && !x.optional);
     if (missing.length) throw new ApiError('incomplete', `Finish these first: ${missing.map((m) => m.label.toLowerCase()).join(', ')}.`);
     const bodhinOwn = r.course.tenantId === db.platformConfig.bodhinTenantId;
@@ -1456,7 +1701,7 @@ export const courseAdmin = {
   /** Change listing after publish. Moving to public (again) needs review; going private or dropping promotion is instant. */
   setListing(userId: string, id: string, visibility: Course['visibility']) {
     const r = canManage(userId, id);
-    if (!r || r.ctx.role !== 'owner') throw new ApiError('forbidden', 'Only the workspace owner can change listing.');
+    if (!r) throw new ApiError('forbidden', 'You can’t change this course’s listing.');
     const wasApprovedPublic = r.course.visibility !== 'private' && r.course.moderation === 'approved';
     let moderation = r.course.moderation;
     if (visibility === 'private') moderation = 'approved';
@@ -1466,7 +1711,7 @@ export const courseAdmin = {
 
   archive(userId: string, id: string) {
     const r = canManage(userId, id);
-    if (!r || r.ctx.role !== 'owner') throw new ApiError('forbidden', 'Only the workspace owner can archive.');
+    if (!r) throw new ApiError('forbidden', 'You can’t archive this course.');
     if (db.enrollments.some((e) => e.courseId === id)) return saveCourse({ ...r.course, visibility: 'private', moderation: 'approved', status: 'archived' }); // enrolled students keep access
     db.courses = db.courses.filter((x) => x.id !== id);
     const j = seedCourses.findIndex((x) => x.id === id);
@@ -1477,7 +1722,7 @@ export const courseAdmin = {
 
   duplicate(userId: string, id: string) {
     const r = canManage(userId, id);
-    if (!r || r.ctx.role !== 'owner') throw new ApiError('forbidden', 'Only the workspace owner can duplicate.');
+    if (!r) throw new ApiError('forbidden', 'You can’t duplicate this course.');
     const copy = clone(r.course);
     copy.id = uid('c');
     copy.title = `${copy.title} (copy)`;
@@ -2970,6 +3215,7 @@ export const admin = {
       reports: db.reports.filter((r) => r.status === 'open').length,
       refunds: db.refundRequests.filter((r) => r.status === 'open').length,
       tickets: db.tickets.filter((t) => t.status !== 'resolved').length,
+      certificates: ROLE_PERMS[role].includes('content.bodhin') ? certification.pendingCount(userId, 'admin') : 0,
       payouts: { amount: payoutDue, tenants: payoutTenants, date: payoutDate },
     };
 
@@ -4053,6 +4299,9 @@ export const flagsAdmin = {
 /* ───────────────────────── Playground ───────────────────────── */
 import { CHALLENGES as PG_CHALLENGES, challengeOf as pgChallenge } from '@/playground/challenges';
 import { PLAYGROUND_LIMITS as PG_LIM, ISSUE_TEXT as PG_ISSUE, validateProject as pgValidate, todayKey as pgToday, pointsOf as pgPoints, fromPiston, type PistonResp } from '@/playground/checks';
+import { dayKey, lastDays, pickDaily, streakOf } from '@/playground/daily';
+import { QUIZ_XP, boardView, heatmap, inWeek, monthLabels, nextTier, peerTotalXp, peerWeeklyXp, rankBoard, streakBonus, tierOf, type BoardEntry } from '@/playground/arena';
+import { QUIZ_BANK } from '@/playground/quizBank';
 import { stackOf as pgStack } from '@/playground/stacks';
 import type { PFile } from '@/playground/stacks';
 import type { RunResult } from '@/playground/types';
@@ -4067,6 +4316,56 @@ let pgTransport: PgTransport = async (req) => {
   if (!r.ok) throw new ApiError(r.status === 429 ? 'quota' : 'server', j.error ?? 'Could not run right now.');
   return j;
 };
+
+type ArenaRec = (typeof db.playgroundDaily)[number];
+const arenaRecs = (userId: string) => db.playgroundDaily.filter((x) => x.userId === userId);
+const arenaKind = (r: ArenaRec) => r.kind ?? 'code';
+
+/** Adds today's record. The first activity of a day also earns the streak bonus. */
+function addArenaRecord(userId: string, today: string, a: { kind: 'code' | 'quiz'; challengeId: string; base: number; correct?: boolean; choice?: number }) {
+  const days = arenaRecs(userId).map((x) => x.day);
+  const bonus = days.includes(today) ? 0 : streakBonus(streakOf([...days, today], today).current);
+  const rec: ArenaRec = { userId, day: today, challengeId: a.challengeId, kind: a.kind, xp: a.base + bonus, correct: a.correct, choice: a.choice };
+  db.playgroundDaily.push(rec);
+  return { ...rec, bonus };
+}
+
+/** XP per local day: challenge points (when first solved) + quiz XP + streak bonuses. */
+function xpByDay(userId: string) {
+  const out: Record<string, number> = {};
+  for (const s of db.playgroundSolved) {
+    if (s.userId !== userId) continue;
+    const ch = pgChallenge(s.challengeId);
+    if (!ch) continue;
+    const d = dayKey(new Date(s.at));
+    out[d] = (out[d] ?? 0) + ch.points;
+  }
+  for (const r of arenaRecs(userId)) out[r.day] = (out[r.day] ?? 0) + (r.xp ?? 0);
+  return out;
+}
+
+/** Weekly cohort leaderboard for the learner's active batch (null when they are not in one). */
+function arenaBoard(userId: string, today: string) {
+  const mine = db.people.filter((p) => p.userId === userId);
+  const link = mine.flatMap((p) => p.courses).find((c) => c.batchId && (c.status === 'active' || c.status === 'on_hold'));
+  const batch = link && db.batches.find((b) => b.id === link.batchId);
+  if (!batch) return null;
+  const members = db.people.filter((p) => p.courses.some((c) => c.batchId === batch.id && c.status !== 'pending'));
+  const entries: BoardEntry[] = members.map((p) => {
+    if (p.userId) {
+      const by = xpByDay(p.userId);
+      const weekXp = Object.entries(by).filter(([d]) => inWeek(d, today)).reduce((s, [, v]) => s + v, 0);
+      const streak = streakOf(arenaRecs(p.userId).map((x) => x.day), today).current;
+      return { id: p.id, name: p.name, xp: weekXp, total: Object.values(by).reduce((s, v) => s + v, 0), streak, you: p.userId === userId };
+    }
+    return { id: p.id, name: p.name, xp: peerWeeklyXp(p.id, today), total: peerTotalXp(p.id, today), streak: p.streak, you: false };
+  });
+  const rows = rankBoard(entries);
+  return { code: batch.code, name: batch.name, size: rows.length, rows, view: boardView(rows, 5) };
+}
+
+/** The Daily Challenge is drawn only from browser-runnable stacks (unlimited, no server quota, works offline-ish). */
+export const dailyPool = () => PG_CHALLENGES.filter((c) => { const s = pgStack(c.stack); return !!s && s.runner !== 'remote'; });
 
 export const playground = {
   /** Test hook: swap the code-server transport. */
@@ -4111,10 +4410,73 @@ export const playground = {
 
   markSolved(userId: string, challengeId: string) {
     if (!pgChallenge(challengeId)) throw new ApiError('not_found', 'Unknown challenge.');
+    let changed = false;
     if (!db.playgroundSolved.some((x) => x.userId === userId && x.challengeId === challengeId)) {
       db.playgroundSolved.push({ userId, challengeId, at: new Date().toISOString() });
-      persist();
+      changed = true;
     }
+    // Passing today's Daily Challenge counts for today's streak, even if it was solved on an earlier day too.
+    const today = dayKey();
+    if (pickDaily(dailyPool(), today)?.id === challengeId && !arenaRecs(userId).some((x) => x.day === today && arenaKind(x) === 'code')) {
+      addArenaRecord(userId, today, { kind: 'code', challengeId, base: 0 });
+      changed = true;
+    }
+    if (changed) persist();
+  },
+
+  /** Today's Daily Challenge (code): the problem, whether it is done, the streak and the last 7 days. */
+  daily(userId: string, now = new Date()) {
+    const today = dayKey(now);
+    const challenge = pickDaily(dailyPool(), today)!;
+    const recs = arenaRecs(userId);
+    const days = recs.map((x) => x.day);
+    const streak = streakOf(days, today);
+    return {
+      today,
+      challenge,
+      stack: pgStack(challenge.stack),
+      done: recs.some((x) => x.day === today && arenaKind(x) === 'code'),
+      streak,
+      week: lastDays(days, today, 7),
+      totalDays: new Set(days).size,
+    };
+  },
+
+  /** Answer today's Daily Concept Quiz. One attempt a day; any attempt keeps the streak, a correct one earns more XP. */
+  answerQuiz(userId: string, choice: number, now = new Date()) {
+    const today = dayKey(now);
+    const quiz = pickDaily(QUIZ_BANK, today)!;
+    if (!Number.isInteger(choice) || choice < 0 || choice >= quiz.options.length) throw new ApiError('invalid', 'Pick one of the answers.');
+    if (arenaRecs(userId).some((x) => x.day === today && x.kind === 'quiz')) throw new ApiError('answered', 'You have already answered today’s quiz. A new one arrives tomorrow.');
+    const correct = choice === quiz.answer;
+    const rec = addArenaRecord(userId, today, { kind: 'quiz', challengeId: quiz.id, base: correct ? QUIZ_XP.correct : QUIZ_XP.tried, correct, choice });
+    persist();
+    return { correct, answer: quiz.answer, explain: quiz.explain, xp: rec.xp ?? 0, bonus: rec.bonus };
+  },
+
+  /** Everything the Code Arena section needs in one read: tasks, XP, badge, streak, heatmap, weekly leaderboard. */
+  arena(userId: string, now = new Date()) {
+    const today = dayKey(now);
+    const code = playground.daily(userId, now);
+    const quiz = pickDaily(QUIZ_BANK, today)!;
+    const qrec = arenaRecs(userId).find((x) => x.day === today && x.kind === 'quiz');
+    const byDay = xpByDay(userId);
+    const total = Object.values(byDay).reduce((s, v) => s + v, 0);
+    const week = Object.entries(byDay).filter(([d]) => inWeek(d, today)).reduce((s, [, v]) => s + v, 0);
+    const heat = heatmap(byDay, today, 15);
+    return {
+      today,
+      code,
+      quiz: { id: quiz.id, topic: quiz.topic, question: quiz.question, options: quiz.options, answered: !!qrec, choice: qrec?.choice, correct: qrec?.correct, answer: qrec ? quiz.answer : undefined, explain: qrec ? quiz.explain : undefined },
+      streak: code.streak,
+      xp: { total, week, today: byDay[today] ?? 0 },
+      tier: tierOf(total),
+      next: nextTier(total),
+      heat,
+      months: monthLabels(heat),
+      activeDays: new Set(arenaRecs(userId).map((x) => x.day)).size,
+      board: arenaBoard(userId, today),
+    };
   },
 
   /** Server-side run for compiled languages. 1 unit for a run, 2 for a multi-test check. Quota is spent before the code server is called. */

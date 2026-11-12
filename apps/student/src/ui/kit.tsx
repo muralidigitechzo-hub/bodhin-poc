@@ -96,10 +96,11 @@ export function IconButton({ icon, label, onPress, dot, tone = 'plain' }: { icon
   );
 }
 
-export function SectionHeader({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) {
+/** `tight`: no top margin, for blocks already spaced by a parent's gap. */
+export function SectionHeader({ title, action, onAction, tight }: { title: string; action?: string; onAction?: () => void; tight?: boolean }) {
   const { c } = useTheme();
   return (
-    <View style={styles.section}>
+    <View style={[styles.section, tight && { marginTop: 0 }]}>
       <Txt variant="heading" style={{ fontSize: 19 }} accessibilityRole="header">
         {title}
       </Txt>

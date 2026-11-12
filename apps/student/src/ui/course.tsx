@@ -1,6 +1,6 @@
 /** Course presentation components: artwork, cards, rows, rating. */
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
@@ -16,8 +16,17 @@ export const openCourse = (id: string) => router.push({ pathname: '/course/[id]'
 export function CourseArt({ course, height = 120, showTitle = false, rounded = radius.lg, children }: { course: Course; height?: number; showTitle?: boolean; rounded?: number; children?: React.ReactNode }) {
   return (
     <LinearGradient colors={[course.art.from, course.art.to]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ height, borderRadius: rounded, overflow: 'hidden', justifyContent: 'flex-end', padding: 12 }}>
-      <Ionicons name={course.art.icon as keyof typeof Ionicons.glyphMap} size={height * 0.62} color="rgba(255,255,255,0.18)" style={{ position: 'absolute', right: -height * 0.06, top: height * 0.08 }} />
-      <View style={[styles.glow, { width: height * 1.4, height: height * 1.4, borderRadius: height, right: -height * 0.5, top: -height * 0.6 }]} />
+      {course.art.image ? (
+        <>
+          <Image source={{ uri: course.art.image }} resizeMode="cover" style={StyleSheet.absoluteFill} accessibilityIgnoresInvertColors />
+          {showTitle && <LinearGradient colors={['transparent', 'rgba(0,0,0,0.6)']} style={StyleSheet.absoluteFill} />}
+        </>
+      ) : (
+        <>
+          <Ionicons name={course.art.icon as keyof typeof Ionicons.glyphMap} size={height * 0.62} color="rgba(255,255,255,0.18)" style={{ position: 'absolute', right: -height * 0.06, top: height * 0.08 }} />
+          <View style={[styles.glow, { width: height * 1.4, height: height * 1.4, borderRadius: height, right: -height * 0.5, top: -height * 0.6 }]} />
+        </>
+      )}
       {showTitle && (
         <Txt variant="bodyStrong" color="#fff" numberOfLines={3} style={{ maxWidth: '72%', fontSize: 14, lineHeight: 18 }}>
           {course.title}

@@ -10,7 +10,7 @@ import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PAGE, useLayout } from '@/ui/responsive';
 import { catalog, commerce, enrollment as enrollmentApi, live as liveApi, reviews as reviewsApi } from '@/api/client';
-import { FORMAT_LABEL, LEVEL_LABEL, compact, lessonCount, nextLesson, priceDisplay, progressOf, totalHours, type Course, type Enrollment, type Lesson, type Order } from '@/core/catalog';
+import { FORMAT_LABEL, courseRef, LEVEL_LABEL, compact, lessonCount, nextLesson, priceDisplay, progressOf, totalHours, type Course, type Enrollment, type Lesson, type Order } from '@/core/catalog';
 import { dateParts, dayLabel, sessionStatus, timeRange } from '@/core/time';
 import { tenantUrl } from '@/core/tenant';
 import { useAuth } from '@/store/auth';
@@ -40,20 +40,21 @@ export default function CoursePage() {
   const { session } = useAuth();
   const userId = session?.user.id ?? '';
   const data = catalog.get(id);
+  const cid = data?.course.id ?? id; // the link may carry the course slug
   const [tab, setTab] = useState<Tab>('overview');
-  const [wish, setWish] = useState(() => catalog.isWishlisted(userId, id));
-  const [enr, setEnr] = useState<Enrollment | null>(() => enrollmentApi.get(userId, id));
+  const [wish, setWish] = useState(() => catalog.isWishlisted(userId, cid));
+  const [enr, setEnr] = useState<Enrollment | null>(() => enrollmentApi.get(userId, cid));
   const [reviewOpen, setReviewOpen] = useState(false);
   const [lockedOpen, setLockedOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [freeBusy, setFreeBusy] = useState(false);
-  const rv = useAsync(() => reviewsApi.list(id), [id]);
+  const rv = useAsync(() => reviewsApi.list(cid), [cid]);
 
   // Re-read enrollment when coming back from checkout or the player.
   useFocusEffect(
     useCallback(() => {
-      setEnr(enrollmentApi.get(userId, id));
-    }, [userId, id]),
+      setEnr(enrollmentApi.get(userId, cid));
+    }, [userId, cid]),
   );
 
   const flash = (t: string) => {
@@ -94,7 +95,7 @@ export default function CoursePage() {
     } else router.push({ pathname: '/checkout/[id]', params: { id: course.id, source } });
   };
   const share = async () => {
-    const url = `${tenantUrl(tenant?.slug ?? 'www')}/course/${course.id}`;
+    const url = `${tenantUrl(tenant?.slug ?? 'www')}/course/${courseRef(course)}`;
     try {
       await Share.share({ message: `${course.title} on Bodhin\n${url}`, url });
     } catch {

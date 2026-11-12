@@ -7,12 +7,13 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, View, useWindowDimen
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { admin, type AdminAlert } from '@/api/client';
+import { admin, courseAdmin, type AdminAlert } from '@/api/client';
 import { ROLE_LABEL, can } from '@/core/admin';
 import { useAuth } from '@/store/auth';
 import { useTheme } from '@/theme/ThemeProvider';
 import { Txt } from '@/ui/Txt';
-import { Avatar, Pill, Skeleton } from '@/ui/kit';
+import { Avatar, BottomSheet, Pill, Skeleton } from '@/ui/kit';
+import { Button } from '@/ui/Button';
 import { PeekSheet, SearchBar, ago, greeting, lakh, type PeekTarget } from '@/ui/admin';
 import { Card } from '@/ui/section';
 
@@ -30,9 +31,17 @@ export default function CommandCenter() {
   const [refreshing, setRefreshing] = useState(false);
   const [peek, setPeek] = useState<PeekTarget>(null);
   const [allAlerts, setAllAlerts] = useState(false);
+  const [create, setCreate] = useState(false);
   const load = useCallback(() => admin.overview(userId).then(setD), [userId]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
   const role = me?.role;
+  // Same creation tools as a tutor, run against Bodhin's own academy (staff act as its owner). Each item follows the admin's rights.
+  const createItems = ([
+    ['layers', 'New course', 'Bodhin’s own course: recorded, live or hybrid', () => router.push({ pathname: '/edu/course/[id]', params: { id: courseAdmin.create(userId) } }), can(role, 'content.bodhin')],
+    ['help-circle', 'Quiz or assignment', 'Test students or collect their work', () => router.push('/edu/assess/new'), can(role, 'content.bodhin')],
+    ['radio', 'Schedule live class', 'Pick a batch, date and time', () => router.push('/edu/schedule'), can(role, 'content.bodhin')],
+    ['megaphone', 'Announcement', 'Message all learners or educators', () => router.push('/admin/broadcast'), can(role, 'broadcast')],
+  ] as const).filter((x) => x[4]);
 
   const left = d && (
     <>
@@ -42,6 +51,7 @@ export default function CommandCenter() {
         {can(role, 'approvals.educators') && <Tile icon="person-add" tint="#E9F0FD" color="#1D5FD0" n={d.pending.educators} label="Educator approvals" onPress={() => router.push({ pathname: '/admin/inbox', params: { tab: 'educators' } })} />}
         {can(role, 'approvals.courses') && <Tile icon="layers" tint="#F1ECFC" color="#7C3AED" n={d.pending.courses} label="Course reviews" onPress={() => router.push({ pathname: '/admin/inbox', params: { tab: 'courses' } })} />}
         {can(role, 'payouts.run') && <Tile icon="send" tint="#E8F6EC" color="#15803D" n={d.pending.payouts.tenants} value={lakh(d.pending.payouts.amount)} label={`Payouts · ${DAYS[new Date(d.pending.payouts.date).getDay()]} ${new Date(d.pending.payouts.date).getDate()}`} onPress={() => router.push({ pathname: '/admin/money', params: { tab: 'payouts' } })} />}
+        {can(role, 'content.bodhin') && <Tile icon="ribbon" tint="#FBF3DC" color="#B7791F" n={d.pending.certificates} label="Certificate approvals" onPress={() => router.push('/admin/certificates')} />}
         {can(role, 'refunds') && <Tile icon="return-down-back" tint="#FDF3E1" color="#B7791F" n={d.pending.refunds} label="Refund requests" onPress={() => router.push({ pathname: '/admin/money', params: { tab: 'refunds' } })} />}
         {can(role, 'approvals.reports') && <Tile icon="flag" tint="#FDECEC" color="#D93A3F" n={d.pending.reports} label="Reported content" onPress={() => router.push({ pathname: '/admin/inbox', params: { tab: 'reports' } })} />}
         {can(role, 'support.tickets') && <Tile icon="chatbubbles" tint="#E9F0FD" color="#1D5FD0" n={d.pending.tickets} label="Support tickets" onPress={() => router.push('/admin/tickets')} />}
@@ -112,6 +122,7 @@ export default function CommandCenter() {
                 <Txt variant="title" numberOfLines={1}>{me?.user.name.split(' ')[0]}</Txt>
               </View>
               {role && <Pill text={ROLE_LABEL[role]} tone="gold" icon="shield-checkmark" />}
+              {createItems.length > 0 && <Button title="Create" iconLeft="add" size="md" onPress={() => setCreate(true)} />}
             </View>
             <SearchBar />
             {!d ? (
@@ -128,6 +139,20 @@ export default function CommandCenter() {
         </ScrollView>
       </SafeAreaView>
       <PeekSheet userId={userId} target={peek} onClose={() => setPeek(null)} />
+      <BottomSheet open={create} onClose={() => setCreate(false)} title="Create">
+        <View style={{ gap: 8 }}>
+          {createItems.map(([icon, t, sub, fn]) => (
+            <Pressable key={t} onPress={() => { setCreate(false); fn(); }} style={[styles.createRow, { borderColor: c.border }]} accessibilityRole="button" accessibilityLabel={t}>
+              <View style={[styles.createIcon, { backgroundColor: c.primarySoft }]}><Ionicons name={icon} size={22} color={c.primary} /></View>
+              <View style={{ flex: 1 }}>
+                <Txt variant="bodyStrong">{t}</Txt>
+                <Txt variant="caption" color={c.muted}>{sub}</Txt>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={c.muted} />
+            </Pressable>
+          ))}
+        </View>
+      </BottomSheet>
     </View>
   );
 }
@@ -256,5 +281,7 @@ const styles = StyleSheet.create({
   alertIcon: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   act: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
   rules: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  createRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18, borderWidth: 1, minHeight: 66 },
+  createIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   rule: { flexGrow: 1, flexBasis: '30%', minWidth: 120, borderRadius: 12, padding: 10 },
 });

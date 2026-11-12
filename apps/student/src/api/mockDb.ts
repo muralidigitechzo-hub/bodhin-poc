@@ -3,6 +3,7 @@
  * Persisted to localStorage on web so a refresh keeps the demo state.
  * DEVELOPER: delete this file once src/api/client.ts points at the real backend.
  */
+import type { MentorBooking, MentorConfig, MentorSlot } from '@/core/mentorship';
 import type { Coupon, EducatorApplication, Invoice, Membership, TeamInvite, Tenant, User } from '@/core/types';
 import type { Course, Enrollment, Order, Review, Tutor } from '@/core/catalog';
 import { courses } from './catalogSeed';
@@ -34,6 +35,19 @@ interface Db {
   calendarSync: Record<string, boolean>;
   playgroundProjects: { id: string; userId: string; stack: string; title: string; files: { name: string; lang: string; code: string }[]; updatedAt: string }[];
   playgroundSolved: { userId: string; challengeId: string; at: string }[];
+  /**
+   * Code Arena activity, at most one record per kind per learner per day. The streak counts a day if it has any.
+   * kind 'code' = passed that day's Daily Challenge; 'quiz' = answered the Daily Concept Quiz.
+   * `xp` is the EXTRA XP this activity earned (quiz points + streak bonus); challenge points come from playgroundSolved.
+   * Records saved before kinds existed have neither field, so they count as kind 'code' with xp 0.
+   */
+  playgroundDaily: { userId: string; day: string; challengeId: string; kind?: 'code' | 'quiz'; xp?: number; correct?: boolean; choice?: number }[];
+  /** 1-on-1 mentorship: a tutor's published weekly windows, the bookable slots made from them, and bookings. */
+  mentorConfigs: MentorConfig[];
+  mentorSlots: MentorSlot[];
+  mentorBookings: MentorBooking[];
+  /** Users who connected Google Calendar (preview: simulated consent; real: OAuth refresh token kept server-side). */
+  calendarLinks: { userId: string; account: string; connectedAt: string }[];
   playgroundUsage: Record<string, number>; // `${userId}:${yyyy-mm-dd}` → server runs used
   attempts: Attempt[];
   submissions: Submission[];
@@ -42,7 +56,11 @@ interface Db {
   coupons: Coupon[];
   invoices: Invoice[];
   invites: TeamInvite[];
-  certificates: { id: string; userId: string; courseId?: string; title: string; program: string; issuedAt: string; weeks: number; tutor: string }[];
+  certificates: { id: string; userId: string; courseId?: string; title: string; program: string; issuedAt: string; weeks: number; tutor: string; template?: import('@/core/certification').CertTemplate }[];
+  /** Certificate requests raised automatically when a learner reaches 75% + passes the course quizzes; the course creator approves. */
+  certRequests: import('@/core/certification').CertRequest[];
+  /** Custom certificate templates per workspace (keyed by tenantId). */
+  certTemplates: Record<string, import('@/core/certification').CertTemplate>;
   tickets: { id: string; userId: string; category: string; subject: string; body: string; status: 'open' | 'in_progress' | 'resolved'; createdAt: string; replies: { by: string; text: string; at: string }[] }[];
   notifications: { id: string; userId: string; kind: 'live' | 'grade' | 'course' | 'payment' | 'qa' | 'system'; title: string; body: string; at: string; read: boolean; link?: { pathname: string; params?: Record<string, string> } }[];
   settings: Record<string, { push: Record<'live' | 'assignments' | 'course' | 'offers', boolean>; wifiOnly: boolean; quality: 'auto' | 'sd' | 'hd'; language: 'en' | 'ta' }>;
@@ -158,6 +176,11 @@ const seed = (): Db => mergeExtras({
   calendarSync: {},
   playgroundProjects: [],
   playgroundSolved: [],
+  playgroundDaily: [],
+  mentorConfigs: [],
+  mentorSlots: [],
+  mentorBookings: [],
+  calendarLinks: [],
   playgroundUsage: {},
   attempts: seedAttempts(),
   submissions: [
@@ -174,6 +197,8 @@ const seed = (): Db => mergeExtras({
     { id: 'BODHIN-GA-2026-0298', userId: 'u_arjun', title: 'Google Analytics Basics', program: 'Short Course', issuedAt: daysAgo(48), weeks: 2, tutor: 'Rajesh Kumar' },
     { id: 'BODHIN-EXL-2026-0177', userId: 'u_arjun', title: 'Excel Essentials', program: 'Short Course', issuedAt: daysAgo(80), weeks: 2, tutor: 'Arun Prakash' },
   ],
+  certRequests: [],
+  certTemplates: {},
   tickets: [
     { id: 'BOD-4587', userId: 'u_arjun', category: 'Live Classes', subject: 'Unable to access live class recording', body: 'The recording for Oct 27 shows a spinner.', status: 'resolved', createdAt: daysAgo(7), replies: [{ by: 'Bodhin Support', text: 'Fixed — the recording finished processing. Please try again.', at: daysAgo(6.8) }] },
     { id: 'BOD-4609', userId: 'u_rajesh', category: 'Payments & Enrollment', subject: 'Payout amount looks lower this week', body: 'My marketplace payout for last week is ₹2,000 less than my statement. Can you check the refund deduction?', status: 'open', createdAt: daysAgo(0.3), replies: [] },

@@ -82,8 +82,9 @@ function Courses({ data, loading, error, reload }: { data: HomeData | null; load
       ) : (
         <Grid cols={wide ? 2 : 1} gap={12}>
         {list.map((e) => (
-          <Pressable key={e.course.id} onPress={() => openCourse(e.course.id)} style={({ pressed }) => [styles.course, { backgroundColor: c.surface, borderColor: c.border }, pressed && { opacity: 0.92 }]} accessibilityRole="button" accessibilityLabel={`${e.course.title}, ${e.progress.pct}% complete`}>
-            <View style={{ flexDirection: 'row', gap: 12 }}>
+          // Card is a plain container: a button can't sit inside another button on web.
+          <View key={e.course.id} style={[styles.course, { backgroundColor: c.surface, borderColor: c.border }]}>
+            <Pressable onPress={() => openCourse(e.course.id)} style={({ pressed }) => [{ flexDirection: 'row', gap: 12 }, pressed && { opacity: 0.92 }]} accessibilityRole="button" accessibilityLabel={`${e.course.title}, ${e.progress.pct}% complete`}>
               <View style={{ width: 96 }}>
                 <CourseArt course={e.course} height={80} rounded={radius.md} />
               </View>
@@ -95,13 +96,13 @@ function Courses({ data, loading, error, reload }: { data: HomeData | null; load
                   <Txt variant="label">{e.progress.pct}%</Txt>
                 </View>
               </View>
-            </View>
+            </Pressable>
             <Pressable onPress={() => router.push({ pathname: '/learn/[courseId]', params: { courseId: e.course.id, lesson: e.next.lesson.id } })} style={[styles.resume, { backgroundColor: c.primarySoft }]} accessibilityRole="button" accessibilityLabel={`Resume: ${e.next.lesson.title}`}>
               <Ionicons name="play-circle" size={22} color={c.primary} />
               <Txt variant="label" numberOfLines={1} style={{ flex: 1 }}>{e.progress.pct === 100 ? 'Rewatch' : 'Next'}: {e.next.lesson.title}</Txt>
               <Ionicons name="chevron-forward" size={18} color={c.primary} />
             </Pressable>
-          </Pressable>
+          </View>
         ))}
         </Grid>
       )}

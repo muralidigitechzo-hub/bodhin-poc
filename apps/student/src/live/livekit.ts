@@ -22,7 +22,8 @@ export interface RoomHandlers {
   onMsg: (m: RoomMsg, from: PersonInfo) => void;
   onPeople: (p: PersonInfo[]) => void;
   onState: (s: 'connecting' | 'connected' | 'reconnecting' | 'disconnected') => void;
-  onVideo: (v: { hostCamera: MediaStream | null; hostScreen: MediaStream | null }) => void;
+  /** `peerCamera` = the first non-host participant's camera: lets a host see the other person in a 1-on-1 call. Classes ignore it. */
+  onVideo: (v: { hostCamera: MediaStream | null; hostScreen: MediaStream | null; peerCamera?: MediaStream | null }) => void;
 }
 
 export async function prepareNative() {
@@ -62,14 +63,19 @@ export class RoomClient {
     const video = () => {
       let cam: MediaStream | null = null;
       let scr: MediaStream | null = null;
+      let peer: MediaStream | null = null;
       r.remoteParticipants.forEach((p) => {
-        if (roleOf(p) !== 'host') return;
+        if (roleOf(p) !== 'host') {
+          const pc = p.getTrackPublication(Track.Source.Camera)?.track;
+          if (!peer && pc?.mediaStream) peer = pc.mediaStream;
+          return;
+        }
         const c = p.getTrackPublication(Track.Source.Camera)?.track;
         const s = p.getTrackPublication(Track.Source.ScreenShare)?.track;
         if (c?.mediaStream) cam = c.mediaStream;
         if (s?.mediaStream) scr = s.mediaStream;
       });
-      this.h.onVideo({ hostCamera: cam, hostScreen: scr });
+      this.h.onVideo({ hostCamera: cam, hostScreen: scr, peerCamera: peer });
     };
     r.on(RoomEvent.ConnectionStateChanged, (s) =>
       this.h.onState(s === ConnectionState.Connected ? 'connected' : s === ConnectionState.Reconnecting ? 'reconnecting' : s === ConnectionState.Disconnected ? 'disconnected' : 'connecting'),

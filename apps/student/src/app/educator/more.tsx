@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { educator } from '@/api/client';
+import { certification, educator } from '@/api/client';
 import { useAuth } from '@/store/auth';
 import { useTheme } from '@/theme/ThemeProvider';
 import { layout } from '@/theme/tokens';
@@ -21,6 +21,7 @@ export default function More() {
   const [logout, setLogout] = useState(false);
   if (!ctx || !session) return null;
   const owner = ctx.role === 'owner';
+  const certPending = certification.pendingCount(userId, 'educator');
   const directOk = ctx.tenant.payments?.directGatewayStatus === 'active';
   const payoutOk = !!ctx.tenant.payments?.payoutAccount?.verified;
 
@@ -54,6 +55,7 @@ export default function More() {
             <Group title="Teaching" icon="school-outline">
               <Row icon="document-text-outline" title="Grade assignments" sub="Rubric scoring, oldest first" onPress={() => router.push('/edu/grading')} />
               <Row icon="help-circle-outline" title="Quizzes & assignments" sub="Create, publish and see results" onPress={() => router.push('/edu/assess')} />
+              <Row icon="ribbon-outline" title="Certificate approvals" sub="Learners who finished a course" onPress={() => router.push('/edu/certificates')} right={certPending > 0 ? <Pill text={String(certPending)} tone="info" /> : undefined} />
               <Row icon="chatbubbles-outline" title="Student doubts" sub="Lesson questions waiting for you" onPress={() => router.push('/edu/doubts')} />
               <Row icon="megaphone-outline" title="Announcements" sub="Open a batch → Updates" onPress={() => router.navigate('/educator/batches')} />
             </Group>

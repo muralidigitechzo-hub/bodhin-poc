@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { ApiError, approvals } from '@/api/client';
 import { useTheme } from '@/theme/ThemeProvider';
 import { Txt } from './Txt';
@@ -162,11 +163,12 @@ export function CourseReview({ id, userId, onDone }: { id: string; userId: strin
                 <Ionicons name={open === i ? 'chevron-up' : 'chevron-down'} size={16} color={c.muted} />
               </Pressable>
               {open === i && m.lessons.map((l) => (
-                <View key={l.id} style={styles.lesson}>
+                <Pressable key={l.id} onPress={() => router.push({ pathname: '/learn/[courseId]', params: { courseId: course.id, lesson: l.id } })} style={styles.lesson} accessibilityRole="button" accessibilityLabel={`Preview ${l.title}`}>
                   <Ionicons name={l.type === 'video' ? 'play-circle-outline' : l.type === 'pdf' ? 'document-text-outline' : 'help-circle-outline'} size={18} color={c.inkSoft} />
                   <Txt variant="label" style={{ flex: 1, fontWeight: '400' }} numberOfLines={1}>{l.title}</Txt>
-                  {l.preview && <Pill text="Preview" tone="success" />}
-                </View>
+                  {l.preview && <Pill text="Free preview" tone="success" />}
+                  <Ionicons name="eye-outline" size={18} color={c.primary} />
+                </Pressable>
               ))}
             </View>
           ))}
