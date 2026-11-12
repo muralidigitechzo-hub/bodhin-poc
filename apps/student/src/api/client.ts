@@ -4,7 +4,7 @@
  * body of each function with a fetch() to the real backend. Signatures stay the same,
  * so no screen code changes.
  */
-import { db, persist, uid } from './mockDb';
+import { db, onRemoteChange, persist, uid } from './mockDb';
 import { categories as seedCategories, courses as seedCourses, liveSessions as seedLive, seedReviews, tutors as seedTutors } from './catalogSeed';
 import { ASSESSMENTS, QUESTIONS } from './assessSeed';
 import type { Coupon, EducatorApplication, Role, Session, Tenant, User } from '@/core/types';
@@ -17,6 +17,9 @@ import { PLANS, type Plan, type PlanId } from '@/core/plans';
 import { attendancePct, batchStatus, generateSessions, weeksBetween, type Announcement, type AttendanceMark, type Batch, type Mark, type MemberStatus, type Person } from '@/core/batch';
 import type { ClassSession, LiveSummary } from '@/core/batch';
 import { joinWindow } from '@/live/protocol';
+import { DEFAULT_RISK_RULES, assessRisk, byUrgency, summarise, type Risk } from '@/core/retention';
+import { analyseWatch, bucketCount, mergeBuckets, watchedBuckets } from '@/core/watch';
+import { NUDGE_COOLDOWN_DAYS, NUDGE_TEMPLATES, agoLabel, cooldownLeftDays, renderNudge, returnedAfter, textProblem, whatsappLink, type Nudge, type NudgeChannel } from '@/core/nudge';
 import { rubricOf, score as scoreQuiz, type Assessment, type AssessStatus, type Attempt, type Question, type Submission } from '@/core/assess';
 
 /** Apply educator-created/edited courses on top of the demo catalogue (in place, so every reader sees them). */
@@ -50,6 +53,12 @@ function syncCatalog() {
   for (const a of ADDON_CATALOG) if (db.catalog.addonPrices[a.kind] != null) a.monthlyInr = db.catalog.addonPrices[a.kind];
 }
 syncCatalog();
+// another tab changed the shared demo data → re-apply the overlays that are built at load time
+onRemoteChange(() => {
+  syncCourses();
+  syncAssessments();
+  syncCatalog();
+});
 
 export class ApiError extends Error {
   constructor(public code: string, message: string, public field?: string) {
@@ -59,6 +68,16 @@ export class ApiError extends Error {
 
 /** POC only: the OTP every verification accepts. */
 export const DEMO_OTP = '123456';
+
+/** Saves the demo data a few seconds after the last change (watch time changes every half second). */
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+function persistSoon() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persist();
+  }, 4000);
+}
 
 const wait = (ms = 450) => new Promise((r) => setTimeout(r, ms));
 const publicUser = ({ password: _pw, ...u }: User & { password: string }): User => u;
@@ -546,6 +565,23 @@ export const player = {
     persist();
   },
 
+  /**
+   * One step of real playback (from → to, in seconds). Only enrolled learners count, and only normal forward playback:
+   * a jump bigger than maxStep (seeking ahead) or going back is not "watching". Feeds the tutor's drop-off heatmap.
+   */
+  recordWatch(userId: string, courseId: string, lessonId: string, from: number, to: number, maxStep: number) {
+    if (!db.enrollments.some((x) => x.userId === userId && x.courseId === courseId)) return;
+    const course = seedCourses.find((c) => c.id === courseId);
+    const lesson = course && allLessons(course).find((l) => l.id === lessonId && l.type === 'video');
+    if (!lesson) return;
+    const add = watchedBuckets(from, to, maxStep);
+    if (!add.length) return;
+    db.watch ??= {};
+    const byUser = (db.watch[lessonId] ??= {});
+    byUser[userId] = mergeBuckets(byUser[userId] ?? [], add, bucketCount(lesson.durationSec ?? 600));
+    persistSoon();
+  },
+
   setComplete(userId: string, courseId: string, lessonId: string, done = true) {
     const e = db.enrollments.find((x) => x.userId === userId && x.courseId === courseId);
     if (!e) return;
@@ -679,7 +715,7 @@ export const liveTab = {
       .map((s) => {
         const course = seedCourses.find((c) => c.id === s.courseId)!;
         const attendance = attendanceFor(userId, s.id);
-        return { session: s, course, tutor: tutorOf(course), reminder: live.isRegistered(userId, s.id), attendance, attended: stayed(attendance), recording: recordingState(s.id) };
+        return { session: s, course, tutor: tutorOf(course), reminder: live.isRegistered(userId, s.id), attendance, attended: stayed(attendance), recording: recordingState(s.id), startedAt: db.liveStarted?.[s.id] ?? null };
       });
     // Batch classes the learner belongs to (scheduled by their educator) — same data the educator sees.
     const batchRows = studentBatchSessions(userId).map(({ s, mark }) => {
@@ -687,16 +723,17 @@ export const liveTab = {
       const course = seedCourses.find((c) => c.id === b.courseId)!;
       const session = { id: s.id, courseId: b.courseId, title: s.title, startsAt: s.startsAt, endsAt: s.endsAt, registeredUserIds: [] };
       const attendance = attendanceFor(userId, s.id);
-      return { session, course, tutor: tutorOf(course), reminder: true, attendance, attended: stayed(attendance), recording: recordingState(s.id) };
+      return { session, course, tutor: tutorOf(course), reminder: true, attendance, attended: stayed(attendance), recording: recordingState(s.id), startedAt: db.liveStarted?.[s.id] ?? null };
     });
     const rows = [...courseRows, ...batchRows].filter((r) => !tenantId || r.course.tenantId === tenantId);
     // A class the host has ended counts as past even if its scheduled end time hasn't arrived.
     const ended = (id: string) => db.sessionStatus[id] === 'conducted' || db.classSessions.find((x) => x.id === id)?.status === 'conducted';
-    const liveNow = rows.filter((r) => !ended(r.session.id) && new Date(r.session.startsAt).getTime() <= now && new Date(r.session.endsAt).getTime() > now);
-    const upcoming = rows.filter((r) => !ended(r.session.id) && new Date(r.session.startsAt).getTime() > now).sort((a, b) => a.session.startsAt.localeCompare(b.session.startsAt));
-    const past = rows.filter((r) => ended(r.session.id) || new Date(r.session.endsAt).getTime() <= now).sort((a, b) => b.session.startsAt.localeCompare(a.session.startsAt));
+    const liveNow = rows.filter((r) => !ended(r.session.id) && (!!r.startedAt || (new Date(r.session.startsAt).getTime() <= now && new Date(r.session.endsAt).getTime() > now)));
+    const upcoming = rows.filter((r) => !ended(r.session.id) && !r.startedAt && new Date(r.session.startsAt).getTime() > now).sort((a, b) => a.session.startsAt.localeCompare(b.session.startsAt));
+    const past = rows.filter((r) => ended(r.session.id) || (new Date(r.session.endsAt).getTime() <= now && !r.startedAt)).sort((a, b) => b.session.startsAt.localeCompare(a.session.startsAt));
     const attended = past.filter((p) => p.attended).length;
     return {
+      enrolledCourses: mine.size,
       liveNow,
       upcoming,
       past,
@@ -729,7 +766,7 @@ export const liveTab = {
     if (!db.flags.liveClasses) throw new ApiError('paused', 'Live classes are temporarily unavailable. Please try again in a few minutes.');
     if (db.sessionStatus[sessionId] === 'conducted' || db.classSessions.find((x) => x.id === sessionId)?.status === 'conducted') throw new ApiError('ended', 'This class has ended. The recording will be in Past & Attendance.');
     if (!learning.isEnrolled(userId, s.courseId)) throw new ApiError('not_enrolled', 'Only enrolled learners can join this class.');
-    const win = joinWindow(new Date(s.startsAt).getTime(), new Date(s.endsAt).getTime());
+    const win = db.liveStarted?.[sessionId] ? ('ok' as const) : joinWindow(new Date(s.startsAt).getTime(), new Date(s.endsAt).getTime());
     if (win === 'too_early') throw new ApiError('too_early', 'The room opens 10 minutes before the class starts.');
     if (win === 'ended') throw new ApiError('ended', 'This class has ended. The recording will be in Past & Attendance.');
     if (!db.attendance.some((a) => a.userId === userId && a.sessionId === sessionId)) {
@@ -771,6 +808,18 @@ export const liveTab = {
       a.minutes = Math.min(cap, Math.max(a.minutes, Math.round(minutes)));
       persist();
     }
+  },
+
+  /** Classes the tutor has started that this learner may join (drives the in-app "class is live" banner). */
+  startedNow(userId: string) {
+    const started = db.liveStarted ?? {};
+    return Object.keys(started).flatMap((id) => {
+      const info = liveTab.session(id);
+      if (!info) return [];
+      const mine = learning.isEnrolled(userId, info.session.courseId) || studentBatchSessions(userId).some((x) => x.s.id === id);
+      const over = db.sessionStatus[id] === 'conducted' || db.classSessions.find((x) => x.id === id)?.status === 'conducted';
+      return mine && !over ? [{ session: info.session, course: info.course, tutor: info.tutor, startedAt: started[id] }] : [];
+    });
   },
 
   /** A past class for the recording page: recording state, chapters, shared files and the learner's own attendance. */
@@ -1191,6 +1240,7 @@ export const educator = {
       attention,
       earnings: ctx.role === 'owner' ? educator.earnings(ctx.tenant.id) : null,
       completion: stats.completion,
+      retention: retention.summary(userId),
       activity: db.activity.filter((a) => a.tenantId === ctx.tenant.id).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 5),
     };
   },
@@ -1246,6 +1296,34 @@ export function courseState(c: Course): CourseState {
   if (c.moderation === 'rejected') return 'changes';
   return c.visibility === 'public_promoted' ? 'promoted' : 'listed';
 }
+
+/* ───────────────────────── Video drop-off insights (tutor) ───────────────────────── */
+
+export const insights = {
+  /** Drop-off of one video lesson. Owners see their workspace's courses, tutors only the courses assigned to them. */
+  lesson(userId: string, courseId: string, lessonId: string) {
+    const r = canManage(userId, courseId);
+    if (!r) return null;
+    const lesson = allLessons(r.course).find((l) => l.id === lessonId && l.type === 'video');
+    if (!lesson) return null;
+    const durationSec = lesson.durationSec ?? 600;
+    return { course: r.course, lesson, durationSec, analysis: analyseWatch(durationSec, Object.values(db.watch?.[lessonId] ?? {})) };
+  },
+
+  /** Every video lesson of a course in order, each with its drop-off, plus which one to look at first. */
+  course(userId: string, courseId: string) {
+    const r = canManage(userId, courseId);
+    if (!r) return null;
+    const rows = r.course.modules.flatMap((m, mi) =>
+      m.lessons.filter((l) => l.type === 'video').map((lesson) => {
+        const durationSec = lesson.durationSec ?? 600;
+        return { module: m, moduleNo: mi + 1, lesson, durationSec, analysis: analyseWatch(durationSec, Object.values(db.watch?.[lesson.id] ?? {})) };
+      }),
+    );
+    const worst = rows.filter((x) => x.analysis.moments.length).sort((a, b) => b.analysis.moments[0].pct - a.analysis.moments[0].pct)[0] ?? null;
+    return { course: r.course, role: r.ctx.role, rows, worstLessonId: worst?.lesson.id ?? null, withData: rows.filter((x) => x.analysis.status === 'ok').length };
+  },
+};
 
 export const courseAdmin = {
   async list(userId: string) {
@@ -1789,6 +1867,161 @@ export const batchesApi = {
   },
 };
 
+/* ───────────────────────── Retention radar (at-risk students) ───────────────────────── */
+
+/**
+ * Risk of one student, judged only on the courses this educator may see (owner: whole workspace, tutor: assigned courses).
+ * Attendance counts every live class held for the student's batches; activity is the latest of their own record and their app account.
+ */
+function riskOfPerson(p: Person, mine: Set<string>) {
+  const enrolments = p.courses.filter((pc) => mine.has(pc.courseId));
+  if (!enrolments.length) return null;
+  let attended = 0;
+  let held = 0;
+  for (const pc of enrolments) {
+    if (!pc.batchId) continue;
+    held += sessionsOf(pc.batchId).filter((x) => x.status === 'conducted').length;
+    attended += marksFor(p.id, pc.batchId).filter((m) => m.status !== 'absent').length;
+  }
+  const main = enrolments.find((pc) => pc.status === 'active') ?? enrolments[0];
+  let last = p.lastActiveAt;
+  if (p.userId) for (const e of db.enrollments) if (e.userId === p.userId && mine.has(e.courseId) && e.lastActiveAt && e.lastActiveAt > last) last = e.lastActiveAt;
+  return { main, lastActiveAt: last, risk: assessRisk({ attendance: held ? { attended, held } : null, lastActiveAt: last, status: main.status }) };
+}
+
+/** Nudges sent in this workspace, newest first (optionally for one student). */
+const nudgesOf = (tenantId: string, personId?: string) =>
+  (db.nudges ?? []).filter((n) => n.tenantId === tenantId && (!personId || n.personId === personId)).sort((a, b) => b.at.localeCompare(a.at));
+
+function riskRows(userId: string) {
+  const ctx = ctxOrThrow(userId);
+  const mine = new Set(educator.courses(userId).map((c) => c.id));
+  return db.people
+    .filter((x) => x.tenantId === ctx.tenant.id)
+    .flatMap((person) => {
+      const r = riskOfPerson(person, mine);
+      if (!r) return [];
+      const course = seedCourses.find((c) => c.id === r.main.courseId)!;
+      const batch = r.main.batchId ? db.batches.find((b) => b.id === r.main.batchId) ?? null : null;
+      return [{ person, course, batch, risk: r.risk, status: r.main.status, lastActiveAt: r.lastActiveAt, lastNudge: nudgesOf(ctx.tenant.id, person.id)[0] ?? null }];
+    });
+}
+
+export type RiskFilter = { courseId?: string; level?: 'high' | 'medium' };
+
+export const retention = {
+  rules: DEFAULT_RISK_RULES,
+
+  /** Short version for the Home card: counts and the three most urgent students. */
+  summary(userId: string) {
+    const rows = riskRows(userId);
+    const judged = rows.filter((r) => r.status === 'active');
+    return { judged: judged.length, ...summarise(rows), top: rows.filter((r) => r.risk.atRisk).sort(byUrgency).slice(0, 3) };
+  },
+
+  /** Full list for the Retention screen, most urgent first. */
+  async radar(userId: string, filter: RiskFilter = {}) {
+    await wait(220);
+    const rows = riskRows(userId);
+    const flagged = rows.filter((r) => r.risk.atRisk);
+    const items = flagged.filter((r) => (!filter.courseId || r.course.id === filter.courseId) && (!filter.level || r.risk.level === filter.level)).sort(byUrgency);
+    const courses = [...new Map(rows.map((r) => [r.course.id, r.course])).values()].map((c) => ({ course: c, atRisk: flagged.filter((r) => r.course.id === c.id).length }));
+    // did the nudges of the last 30 days bring students back?
+    const ctx = ctxOrThrow(userId);
+    const byId = new Map(rows.map((r) => [r.person.id, r]));
+    const recent = nudgesOf(ctx.tenant.id).filter((n) => byId.has(n.personId) && Date.now() - new Date(n.at).getTime() < 30 * 864e5);
+    const nudges = { sent: recent.length, returned: recent.filter((n) => returnedAfter(n.at, byId.get(n.personId)!.lastActiveAt)).length };
+    return { judged: rows.filter((r) => r.status === 'active').length, ...summarise(rows), items, courses, rules: DEFAULT_RISK_RULES, nudges };
+  },
+
+  templates: NUDGE_TEMPLATES,
+  cooldownDays: NUDGE_COOLDOWN_DAYS,
+
+  /** The message for one student, filled in from a template (the tutor can still edit it). */
+  draft(userId: string, personId: string, templateId: string) {
+    const row = riskRows(userId).find((r) => r.person.id === personId);
+    if (!row) throw new ApiError('not_found', 'This student is not in your workspace.');
+    const t = NUDGE_TEMPLATES.find((x) => x.id === templateId) ?? NUDGE_TEMPLATES[0];
+    const tutor = db.users.find((u) => u.id === userId)?.name ?? 'Your tutor';
+    return {
+      text: renderNudge(t.text, { name: row.person.name, course: row.course.title, tutor, risk: row.risk }),
+      lastNudge: row.lastNudge,
+      waitDays: cooldownLeftDays(row.lastNudge?.at),
+      canWhatsapp: !!whatsappLink(row.person.phone, 'x'),
+      optOut: !!row.person.nudgeOptOut,
+    };
+  },
+
+  /**
+   * Send an in-app or email nudge to one or many at-risk students. {placeholders} are filled per student.
+   * Skips (and says why) students who are no longer at risk, asked not to be contacted, were nudged in the last 3 days, or cannot be reached.
+   */
+  async send(userId: string, input: { personIds: string[]; channel: Exclude<NudgeChannel, 'whatsapp'>; templateId: string; text: string }) {
+    await wait(350);
+    const ctx = ctxOrThrow(userId);
+    if (input.channel !== 'app' && input.channel !== 'email') throw new ApiError('channel', 'Choose in-app or email. WhatsApp opens one chat at a time.');
+    const ids = [...new Set(input.personIds)];
+    if (!ids.length) throw new ApiError('none', 'Choose at least one student.');
+    if (ids.length > 50) throw new ApiError('many', 'Send to 50 students or fewer at a time.');
+    const rows = riskRows(userId);
+    const tutor = db.users.find((u) => u.id === userId)?.name ?? 'Your tutor';
+    const first = rows.find((r) => r.person.id === ids[0]);
+    if (first) {
+      const problem = textProblem(renderNudge(input.text, { name: first.person.name, course: first.course.title, tutor, risk: first.risk }));
+      if (problem) throw new ApiError('text', problem, 'text');
+    }
+    const results: { personId: string; name: string; status: 'sent' | 'skipped'; reason?: string; delivered?: 'in_app' | 'email' }[] = [];
+    db.nudges ??= [];
+    for (const pid of ids) {
+      const row = rows.find((r) => r.person.id === pid);
+      const skip = (reason: string) => results.push({ personId: pid, name: row?.person.name ?? 'Unknown', status: 'skipped', reason });
+      if (!row) { skip('Not one of your students.'); continue; }
+      if (!row.risk.atRisk) { skip('No longer at risk.'); continue; }
+      if (row.person.nudgeOptOut) { skip('Asked not to be contacted.'); continue; }
+      const wait_ = cooldownLeftDays(row.lastNudge?.at);
+      if (wait_ > 0) { skip(`Nudged ${agoLabel(row.lastNudge!.at)}. Try again in ${wait_} day${wait_ === 1 ? '' : 's'}.`); continue; }
+      const text = renderNudge(input.text, { name: row.person.name, course: row.course.title, tutor, risk: row.risk });
+      const viaApp = input.channel === 'app' && !!row.person.userId;
+      if (!viaApp && !row.person.email) { skip('No email or app account to reach them.'); continue; }
+      if (viaApp) notifyPerson(row.person, `A note from ${tutor.split(' ')[0]}`, text, 'course');
+      db.nudges.push({ id: uid('nd'), tenantId: ctx.tenant.id, personId: pid, by: userId, channel: viaApp ? 'app' : 'email', templateId: input.templateId, text, at: new Date().toISOString(), reasons: row.risk.reasons.map((x) => x.kind) });
+      row.lastNudge = db.nudges[db.nudges.length - 1];
+      results.push({ personId: pid, name: row.person.name, status: 'sent', delivered: viaApp ? 'in_app' : 'email' });
+    }
+    persist();
+    return { results, sent: results.filter((r) => r.status === 'sent').length, skipped: results.filter((r) => r.status === 'skipped').length };
+  },
+
+  /** The tutor is about to send this through their own WhatsApp: record it and return the link that opens the chat. */
+  logWhatsapp(userId: string, personId: string, text: string) {
+    const ctx = ctxOrThrow(userId);
+    const row = riskRows(userId).find((r) => r.person.id === personId);
+    if (!row) throw new ApiError('not_found', 'This student is not in your workspace.');
+    if (row.person.nudgeOptOut) throw new ApiError('optout', `${row.person.name.split(' ')[0]} asked not to be contacted.`);
+    const left = cooldownLeftDays(row.lastNudge?.at);
+    if (left > 0) throw new ApiError('cooldown', `Nudged ${agoLabel(row.lastNudge!.at)}. Try again in ${left} day${left === 1 ? '' : 's'}.`);
+    const tutor = db.users.find((u) => u.id === userId)?.name ?? 'Your tutor';
+    const body = renderNudge(text, { name: row.person.name, course: row.course.title, tutor, risk: row.risk });
+    const problem = textProblem(body);
+    if (problem) throw new ApiError('text', problem, 'text');
+    const link = whatsappLink(row.person.phone, body);
+    if (!link) throw new ApiError('phone', 'This student has no valid WhatsApp number. Send an in-app message or email instead.');
+    db.nudges ??= [];
+    db.nudges.push({ id: uid('nd'), tenantId: ctx.tenant.id, personId, by: userId, channel: 'whatsapp', templateId: 'custom', text: body, at: new Date().toISOString(), reasons: row.risk.reasons.map((x) => x.kind) });
+    persist();
+    return { link };
+  },
+
+  /** Earlier nudges to one student and whether they came back afterwards. */
+  history(userId: string, personId: string) {
+    const ctx = ctxOrThrow(userId);
+    const p = db.people.find((x) => x.id === personId && x.tenantId === ctx.tenant.id);
+    if (!p) return [];
+    const last = riskOfPerson(p, new Set(educator.courses(userId).map((c) => c.id)))?.lastActiveAt ?? p.lastActiveAt;
+    return nudgesOf(ctx.tenant.id, personId).slice(0, 5).map((n) => ({ ...n, returned: returnedAfter(n.at, last) }));
+  },
+};
+
 export const people = {
   async list(userId: string) {
     await wait(220);
@@ -1836,8 +2069,11 @@ export const people = {
           { text: `Completed: ${allLessons(enrolled[0].course)[Math.max(0, Math.round((allLessons(enrolled[0].course).length * enrolled[0].progress) / 100) - 1)]?.title ?? 'Introduction'}`, at: p.lastActiveAt, icon: 'checkmark-circle' },
           { text: 'Watched a recorded lesson', at: new Date(new Date(p.lastActiveAt).getTime() - 864e5).toISOString(), icon: 'play-circle' },
         ];
+    const risk: Risk | null = riskOfPerson(p, new Set(educator.courses(userId).map((c) => c.id)))?.risk ?? null;
     return {
       person: p,
+      risk,
+      nudges: retention.history(userId, personId),
       enrolled,
       overall: lessonsTotal ? Math.round((lessonsDone / lessonsTotal) * 100) : 0,
       lessons: { done: lessonsDone, total: lessonsTotal },
@@ -2070,7 +2306,14 @@ export const liveAdmin = {
       const row = db.classSessions.find((x) => x.id === id)!;
       if (row.status === 'cancelled') throw new ApiError('cancelled', 'This class was cancelled. Restore it from the batch schedule first.');
     }
-    r.audience.forEach((p) => notifyPerson(p, 'Your class is live now', `${r.session.title} has started. Tap to join.`, 'live'));
+    db.liveStarted ??= {};
+    if (!db.liveStarted[id]) {
+      db.liveStarted[id] = new Date().toISOString();
+      const ids = new Set<string>(r.audience.map((p) => p.userId).filter(Boolean) as string[]);
+      if (r.session.kind === 'course') db.enrollments.filter((e) => e.courseId === r.session.courseId).forEach((e) => ids.add(e.userId));
+      ids.delete(userId);
+      ids.forEach((who) => db.notifications.push({ id: uid('n'), userId: who, kind: 'live', title: 'Your class is live now', body: `${r.session.title} has started. Tap to join.`, at: new Date().toISOString(), read: false, link: { pathname: '/live-room/[id]', params: { id } } }));
+    }
     persist();
     return r;
   },
@@ -2107,6 +2350,7 @@ export const liveAdmin = {
       materials: data.materials, qa: data.qa, polls: data.polls, chatCount: data.chatCount, recordingPublished: s.settings.record && s.settings.saveToCourse,
     };
     speakers.forEach((k) => k.startsWith(`${id}:`) && speakers.delete(k));
+    if (db.liveStarted) delete db.liveStarted[id];
     db.activity.push({ id: uid('act'), tenantId: r.ctx.tenant.id, kind: 'live', text: `Live class “${s.title}” completed · ${attended}/${r.audience.length} attended`, at: new Date().toISOString(), link: { pathname: '/edu/summary/[id]', params: { id } } });
     persist();
   },

@@ -7,6 +7,7 @@ import { AuthProvider } from '@/store/auth';
 import { SystemBanner } from '@/ui/SystemBanner';
 import { View } from 'react-native';
 import { DesktopFrame } from '@/ui/responsive';
+import { LiveStartBanner } from '@/ui/LiveStartBanner';
 
 export default function RootLayout() {
   return (
@@ -16,6 +17,7 @@ export default function RootLayout() {
           <StatusBar style="dark" />
           <View style={{ flex: 1 }}>
             <SystemBanner />
+            <LiveStartBanner />
             <View style={{ flex: 1 }}>
               <DesktopFrame>
                 <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right', gestureEnabled: true, fullScreenGestureEnabled: true }} />

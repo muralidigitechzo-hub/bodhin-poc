@@ -12,6 +12,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { courseAdmin, educator } from '@/api/client';
+import { DEFAULT_RISK_RULES } from '@/core/retention';
 import { inr } from '@/ui/section';
 import { greeting, sessionStatus, timeRange, dayLabel } from '@/core/time';
 import { useAuth } from '@/store/auth';
@@ -19,7 +20,7 @@ import { useTheme } from '@/theme/ThemeProvider';
 import { layout, radius } from '@/theme/tokens';
 import { Txt } from '@/ui/Txt';
 import { Button } from '@/ui/Button';
-import { AppHeader, BottomSheet, ErrorState, Pill, ProgressBar, SectionHeader, Skeleton, useAsync } from '@/ui/kit';
+import { AppHeader, Avatar, BottomSheet, ErrorState, Pill, ProgressBar, SectionHeader, Skeleton, useAsync } from '@/ui/kit';
 
 type Data = Awaited<ReturnType<typeof educator.dashboard>>;
 const soon = (f: string, step: string) => router.push({ pathname: '/educator-soon', params: { f, step } });
@@ -100,7 +101,7 @@ export default function EducatorHome() {
 function Body({ data, twoCol }: { data: Data; twoCol: boolean }) {
   const { c } = useTheme();
   const { session } = useAuth();
-  const { ctx, kpis, next, attention, earnings, completion, activity } = data;
+  const { ctx, kpis, next, attention, earnings, retention, activity } = data;
   const owner = ctx.role === 'owner';
   const worst = ctx.usage.worst;
 
@@ -173,8 +174,8 @@ function Body({ data, twoCol }: { data: Data; twoCol: boolean }) {
   const right = (
     <>
       {earnings && <EarningsCard e={earnings} />}
-      <SectionHeader title="Course completion" />
-      <Completion data={completion} />
+      <SectionHeader title="Retention radar" action="View all" onAction={() => router.push('/edu/retention')} />
+      <RetentionCard data={retention} />
       <SectionHeader title="Recent activity" />
       <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border, padding: 0 }]}>
         {activity.map((a, i) => {
@@ -363,39 +364,43 @@ function Spark({ values, color }: { values: number[]; color: string }) {
   );
 }
 
-function Completion({ data }: { data: Data['completion'] }) {
+/** Home card: how many students are drifting away, and the three who need a message first. */
+function RetentionCard({ data }: { data: Data['retention'] }) {
   const { c } = useTheme();
-  const total = data.completed + data.inProgress + data.notStarted || 1;
-  const parts = [
-    { label: 'Completed', n: data.completed, color: c.success },
-    { label: 'In progress', n: data.inProgress, color: c.info },
-    { label: 'Not started', n: data.notStarted, color: c.borderStrong },
-  ];
-  const size = 112, stroke = 14, r = (size - stroke) / 2, circ = 2 * Math.PI * r;
-  let offset = 0;
+  const rules = DEFAULT_RISK_RULES;
+  if (data.judged === 0) {
+    return (
+      <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border, alignItems: 'center' }]}>
+        <Ionicons name="people-outline" size={30} color={c.muted} />
+        <Txt color={c.muted} center>Your students’ attendance and activity show up here once they join a batch or enrol.</Txt>
+      </View>
+    );
+  }
+  const ok = data.atRisk === 0;
   return (
-    <View style={[styles.card, { backgroundColor: c.surface, borderColor: c.border, flexDirection: 'row', alignItems: 'center', gap: 18 }]}>
-      <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
-        <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
-          {parts.map((p) => {
-            const len = (p.n / total) * circ;
-            const el = <Circle key={p.label} cx={size / 2} cy={size / 2} r={r} stroke={p.color} strokeWidth={stroke} fill="none" strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-offset} transform={`rotate(-90 ${size / 2} ${size / 2})`} />;
-            offset += len;
-            return el;
-          })}
-        </Svg>
-        <Txt variant="heading">{Math.round((data.completed / total) * 100)}%</Txt>
-        <Txt variant="caption" color={c.muted} style={{ fontSize: 10 }}>completed</Txt>
-      </View>
-      <View style={{ flex: 1, gap: 10 }}>
-        {parts.map((p) => (
-          <View key={p.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <View style={[styles.dot, { backgroundColor: p.color }]} />
-            <Txt variant="label" style={{ flex: 1, fontWeight: '500' }}>{p.label}</Txt>
-            <Txt variant="bodyStrong" style={{ fontVariant: ['tabular-nums'] }}>{p.n.toLocaleString('en-IN')}</Txt>
+    <View style={[styles.card, { backgroundColor: c.surface, borderColor: ok ? c.border : c.danger, padding: 0 }]}>
+      <Pressable onPress={() => router.push('/edu/retention')} style={[styles.rrHead, { padding: 16 }]} accessibilityRole="button" accessibilityLabel={ok ? 'Everyone is on track. Open retention radar' : `${data.atRisk} students at risk. Open retention radar`}>
+        <View style={[styles.rrBadge, { backgroundColor: ok ? c.successBg : c.dangerBg }]}>
+          <Ionicons name={ok ? 'checkmark-circle' : 'alert-circle'} size={26} color={ok ? c.success : c.danger} />
+        </View>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Txt variant="heading">{ok ? 'Everyone is on track' : `${data.atRisk} at risk`}</Txt>
+          <Txt variant="caption" color={c.muted}>
+            {ok ? `${data.judged} active students · attendance and activity look healthy` : `of ${data.judged} active · ${data.lowAttendance} low attendance (under ${rules.minAttendancePct}%) · ${data.inactive} inactive ${rules.inactiveDays}+ days`}
+          </Txt>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={c.muted} />
+      </Pressable>
+      {data.top.map((r) => (
+        <Pressable key={r.person.id} onPress={() => router.push({ pathname: '/edu/student/[id]', params: { id: r.person.id } })} style={[styles.rrRow, { borderTopColor: c.border }]} accessibilityRole="button" accessibilityLabel={`${r.person.name}: ${r.risk.reasons.map((x) => x.text).join(', ')}`}>
+          <Avatar name={r.person.name} size={36} color={r.risk.level === 'high' ? c.danger : c.warning} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Txt variant="label" numberOfLines={1}>{r.person.name}</Txt>
+            <Txt variant="caption" color={c.muted} numberOfLines={1}>{r.risk.reasons[0]?.text}</Txt>
           </View>
-        ))}
-      </View>
+          <Pill text={r.risk.level === 'high' ? 'High' : 'Medium'} tone={r.risk.level === 'high' ? 'live' : 'warning'} />
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -413,6 +418,9 @@ const styles = StyleSheet.create({
   kpi: { flexBasis: '47%', flexGrow: 1, padding: 14, borderRadius: radius.lg, borderWidth: 1, gap: 6 },
   kpiIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   card: { padding: 16, borderRadius: radius.lg, borderWidth: 1, gap: 12, overflow: 'hidden' },
+  rrHead: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 64 },
+  rrBadge: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  rrRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, minHeight: 60, borderTopWidth: 1 },
   attn: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, minHeight: 62 },
   attnIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   count: { minWidth: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },

@@ -50,6 +50,8 @@ export interface Person {
   streak: number;
   scores: { title: string; pct: number | null }[];
   notes: { id: string; text: string; at: string; by: string }[];
+  /** the student asked not to receive nudges: never message them from the radar */
+  nudgeOptOut?: boolean;
 }
 
 export interface ClassSession {

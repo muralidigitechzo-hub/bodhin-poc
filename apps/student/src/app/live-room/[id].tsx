@@ -83,6 +83,7 @@ function Room({ id, info }: { id: string; info: NonNullable<ReturnType<typeof li
   const [hands, setHands] = useState<string[]>([]);
   const [hostCam, setHostCam] = useState<MediaStream | null>(null);
   const [hostScreen, setHostScreen] = useState<MediaStream | null>(null);
+  const [speaker, setSpeaker] = useState<{ name: string; stream: MediaStream | null } | null>(null);
   const [stage, setStage] = useState<Stage | null>(null);
   const [slide, setSlide] = useState<{ index: number; title?: string; sub?: string; total?: number } | null>(null);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
@@ -121,7 +122,7 @@ function Room({ id, info }: { id: string; info: NonNullable<ReturnType<typeof li
   const flash = useCallback((t: string) => {
     setToast(t);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => alive.current && setToast(null), 3000);
+    toastTimer.current = setTimeout(() => alive.current && setToast(null), Math.min(10_000, Math.max(3000, t.length * 70)));
   }, []);
   const sys = useCallback((text: string) => setMsgs((x) => [...x, { id: `sys${Date.now()}${Math.random()}`, who: 'Bodhin', role: 'system', text, at: clock() }]), []);
   const bump = (k: 'chat' | 'qa' | 'files') => panelRef.current !== k && setUnread((u) => ({ ...u, [k]: u[k] + 1 }));
@@ -236,6 +237,7 @@ function Room({ id, info }: { id: string; info: NonNullable<ReturnType<typeof li
           if (!alive.current) return;
           setHostCam(v.hostCamera);
           setHostScreen(v.hostScreen);
+          setSpeaker(v.speaker ?? null);
         },
         onMsg: (m, from) => handle.current(m, from),
       },
@@ -423,6 +425,15 @@ function Room({ id, info }: { id: string; info: NonNullable<ReturnType<typeof li
         {pip && (
           <View style={styles.pip}>
             <RoomVideo stream={hostCam} fit="cover" />
+          </View>
+        )}
+        {speaker && (
+          <View style={styles.speakerTile} pointerEvents="none">
+            {speaker.stream ? <RoomVideo stream={speaker.stream} fit="cover" /> : <Ionicons name="mic" size={22} color="#3FD17C" style={{ alignSelf: 'center', marginTop: 10 }} />}
+            <View style={styles.speakerName}>
+              <Ionicons name="mic" size={10} color="#3FD17C" />
+              <Txt variant="caption" color="#fff" style={{ fontSize: 10 }} numberOfLines={1}>{speaker.name}</Txt>
+            </View>
           </View>
         )}
         <View style={styles.floatRow} pointerEvents="none">
@@ -834,6 +845,8 @@ const styles = StyleSheet.create({
   slide: { flex: 1, padding: 16, gap: 8, justifyContent: 'center' },
   wait: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 16 },
   pip: { position: 'absolute', right: 8, bottom: 8, width: 104, height: 72, borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#3FD17C', backgroundColor: '#000' },
+  speakerTile: { position: 'absolute', left: 8, top: 8, width: 96, height: 64, borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#3FD17C', backgroundColor: '#0B1426' },
+  speakerName: { position: 'absolute', left: 4, right: 4, bottom: 3, flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 6, paddingHorizontal: 4 },
   floatRow: { position: 'absolute', left: 8, bottom: 8, flexDirection: 'row', gap: 6, alignItems: 'flex-end' },
   floatChip: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 14, paddingHorizontal: 8, paddingVertical: 4 },
   panel: { flex: 1, borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: 'hidden' },

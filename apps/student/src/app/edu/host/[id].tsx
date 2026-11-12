@@ -1,7 +1,7 @@
 /**
  * Host live room. Stage: slides · screen share · whiteboard (draw with finger/mouse).
  * Panel: Chat · Q&A · Polls · People (raised hands). Phone: stage on top, panel below, controls in thumb zone.
- * ≥900px: stage left, panel right. Media/realtime are simulated in the POC (real: WebRTC SFU + websocket).
+ * ≥900px: stage left, panel right. Chat, polls, board, files and camera/mic/screen are real (same-device WebRTC today; media server across devices).
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, Pressable, ScrollView, StyleSheet, Switch, TextInput, View, useWindowDimensions } from 'react-native';
@@ -19,8 +19,9 @@ import { Button } from '@/ui/Button';
 import { Avatar, BottomSheet, Pill } from '@/ui/kit';
 import { Banner } from '@/ui/misc';
 import { prepareNative, type PersonInfo } from '@/live/livekit';
+import { RoomVideo } from '@/ui/RoomVideo';
 import { createRoom, type Provider, type RoomLike } from '@/live/room';
-import { BOARD_H, BOARD_W, strokePath, type RoomMsg } from '@/live/protocol';
+import { BOARD_H, BOARD_W, strokePath, strokePieces, type RoomMsg } from '@/live/protocol';
 
 type Stage = 'slides' | 'screen' | 'board';
 type PanelTab = 'chat' | 'qa' | 'polls' | 'people';
@@ -31,8 +32,8 @@ type Stroke = { color: string; w: number; pts: [number, number][] };
 type Hand = { id: string; name: string };
 
 const COLORS = ['#0E1B33', '#E5383B', '#1D5FD0', '#15803D', '#E8A21B'];
-const PEN_W = 5;
-const ERASER_W = 36;
+const PEN_W = 7;
+const ERASER_W = 40;
 const fmt = (s: number) => `${Math.floor(s / 3600) ? `${Math.floor(s / 3600)}:` : ''}${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 let seq = 0;
 const nid = () => `x${++seq}`;
@@ -49,8 +50,11 @@ export default function HostRoom() {
   const [elapsed, setElapsed] = useState(0);
   const [stage, setStage] = useState<Stage>('slides');
   const [slide, setSlide] = useState(0);
-  const [mic, setMic] = useState(micP !== '0');
-  const [cam, setCam] = useState(camP !== '0');
+  const [mic, setMic] = useState(false);
+  const [cam, setCam] = useState(false);
+  const [localCam, setLocalCam] = useState<MediaStream | null>(null);
+  const [localScreen, setLocalScreen] = useState<MediaStream | null>(null);
+  const [speakerView, setSpeakerView] = useState<{ name: string; stream: MediaStream | null } | null>(null);
   const [rec, setRec] = useState(!!info?.session.settings.record);
   const [tab, setTab] = useState<PanelTab>('chat');
   const [msgs, setMsgs] = useState<Msg[]>([{ id: 'w', by: 'Bodhin', text: 'Class is live. Students have been notified.', sys: true }]);
@@ -93,7 +97,7 @@ export default function HostRoom() {
 
   const flash = (t: string) => {
     setToast(t);
-    setTimeout(() => setToast(null), 2000);
+    setTimeout(() => setToast(null), Math.min(10_000, Math.max(2000, t.length * 70)));
   };
   const chapter = (label: string) => setChapters((x) => (x[x.length - 1]?.label === label ? x : [...x, { atSec: elapsed, label }]));
 
@@ -107,6 +111,9 @@ export default function HostRoom() {
   const [provider, setProvider] = useState<Provider>('loopback');
   const [roomErr, setRoomErr] = useState('');
   const [screenOn, setScreenOn] = useState(false);
+  const micRef = useRef(false);
+  const flashRef = useRef((_t: string) => {});
+  flashRef.current = flash;
   const voters = useRef(new Map<string, number>()); // learner id → option (one vote each)
   const pollId = useRef('');
   const shared = useRef<{ id: string; name: string; size: number; url: string }[]>([]);
@@ -118,6 +125,10 @@ export default function HostRoom() {
   };
   const txRef = useRef(tx);
   txRef.current = tx;
+  /** Send one whole stroke, in connected pieces of at most 400 points. */
+  const sendStroke = (st: Stroke) => {
+    for (let i = 0; i < Math.max(1, st.pts.length); i += 399) txRef.current({ t: 'stroke', color: st.color, w: st.w, pts: st.pts.slice(Math.max(0, i - 1), i + 399) });
+  };
 
   useEffect(() => {
     // wait for the signed-in user: on a page refresh the session loads after the first render
@@ -133,7 +144,12 @@ export default function HostRoom() {
           r.provider,
           {
             onState: () => {},
-            onVideo: () => {},
+            onVideo: (v) => setSpeakerView(v.speaker ?? null),
+            onLocal: (v) => {
+              setLocalCam(v.camera);
+              setLocalScreen(v.screen);
+              setScreenOn(!!v.screen);
+            },
             onPeople: (p) => {
               const others = p.filter((x) => x.id !== userId);
               setRoster(others);
@@ -166,7 +182,7 @@ export default function HostRoom() {
                   txRef.current({ t: 'poll', id: pollId.current, q: p.q, options: p.options, ...(p.quiz ? { quiz: true } : {}) });
                   txRef.current({ t: 'poll_result', id: pollId.current, votes: p.votes });
                 }
-                sn.strokes.slice(-150).forEach((st) => txRef.current({ t: 'stroke', color: st.color, w: st.w, pts: st.pts.slice(0, 400) }));
+                sn.strokes.slice(-150).forEach(sendStroke);
               }
             },
           },
@@ -178,8 +194,9 @@ export default function HostRoom() {
           return;
         }
         room.current = rc;
-        rc.setMic(micP !== '0').catch(() => {});
-        rc.setCam(camP !== '0').catch(() => {});
+        // start with the choices made on the pre-join screen; a denied permission is shown, not hidden
+        if (micP !== '0') rc.setMic(true).then(() => { micRef.current = true; setMic(true); }).catch((e) => flashRef.current((e as Error).message));
+        if (camP !== '0') rc.setCam(true).then(() => setCam(true)).catch((e) => flashRef.current((e as Error).message));
       })
       .catch((e) => !dead && setRoomErr((e as ApiError).message ?? 'Could not open the classroom.'));
     return () => {
@@ -202,6 +219,17 @@ export default function HostRoom() {
   const penRef = useRef(pen);
   penRef.current = pen;
   const norm = (x: number, y: number): [number, number] => [Math.min(1, Math.max(0, x / boardBox.current.w)), Math.min(1, Math.max(0, y / boardBox.current.h))];
+  // What is written reaches learners WHILE the tutor writes: new points are sent every ~60 ms as small connected pieces.
+  const sentIdx = useRef(0);
+  const lastSent = useRef(0);
+  const flushStroke = (final: boolean) => {
+    const st = live.current;
+    if (!st) return;
+    const { pieces, sent } = strokePieces(st.pts, sentIdx.current, final);
+    pieces.forEach((pts) => txRef.current({ t: 'stroke', color: st.color, w: st.w, pts }));
+    sentIdx.current = sent;
+    lastSent.current = Date.now();
+  };
   const pan = useMemo(
     () =>
       PanResponder.create({
@@ -209,20 +237,22 @@ export default function HostRoom() {
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (e) => {
           live.current = { color: penRef.current, w: penRef.current === 'eraser' ? ERASER_W : PEN_W, pts: [norm(e.nativeEvent.locationX, e.nativeEvent.locationY)] };
+          sentIdx.current = 0;
+          lastSent.current = Date.now();
           force((n) => n + 1);
         },
         onPanResponderMove: (e) => {
           const last = live.current?.pts[live.current.pts.length - 1];
           const q = norm(e.nativeEvent.locationX, e.nativeEvent.locationY);
-          if (!last || Math.abs(last[0] - q[0]) + Math.abs(last[1] - q[1]) > 0.002) live.current?.pts.push(q);
+          if (!last || Math.abs(last[0] - q[0]) + Math.abs(last[1] - q[1]) > 0.0015) live.current?.pts.push(q);
+          if (Date.now() - lastSent.current > 60) flushStroke(false);
           force((n) => n + 1);
         },
         onPanResponderRelease: () => {
           const st = live.current;
-          live.current = null;
           if (st) {
-            // long strokes are sent in chunks of 400 points so none is cut off
-            for (let i = 0; i < st.pts.length; i += 399) txRef.current({ t: 'stroke', color: st.color, w: st.w, pts: st.pts.slice(Math.max(0, i - 1), i + 399) });
+            flushStroke(true);
+            live.current = null;
             setStrokes((x) => [...x.slice(-400), st]);
             setRedo([]);
           }
@@ -296,9 +326,7 @@ export default function HostRoom() {
     if (k === 'slides') tx({ t: 'slide', index: slide, title: slides[slide]?.t, sub: slides[slide]?.s, total: slides.length });
     chapter(k === 'board' ? 'Whiteboard explanation' : k === 'screen' ? 'Live demo (screen share)' : slides[slide].t);
     if (k === 'screen') {
-      if (provider === 'livekit') {
-        room.current?.setScreen(true).then(() => setScreenOn(true)).catch(() => flash('Could not start screen sharing'));
-      } else flash('Screen sharing needs the live media server');
+      room.current?.setScreen(true).then(() => setScreenOn(true)).catch((e) => flash((e as Error).message));
     } else if (screenOn) {
       room.current?.setScreen(false).catch(() => {});
       setScreenOn(false);
@@ -317,7 +345,7 @@ export default function HostRoom() {
   /** Undo: learners only receive additions, so clear their board and replay what is left. */
   const resendBoard = (left: Stroke[]) => {
     tx({ t: 'board_clear' });
-    left.slice(-150).forEach((st) => tx({ t: 'stroke', color: st.color, w: st.w, pts: st.pts.slice(0, 400) }));
+    left.slice(-150).forEach(sendStroke);
   };
   const allow = (h: Hand, on: boolean) => {
     try {
@@ -358,12 +386,16 @@ export default function HostRoom() {
       )}
       {stage === 'screen' && (
         <View style={styles.slide}>
-          {screenOn ? (
-            <Pill text="You are sharing your screen" tone="info" icon="desktop-outline" />
+          {screenOn && localScreen ? (
+            <>
+              <RoomVideo stream={localScreen} fit="contain" />
+              <View style={{ position: 'absolute', left: 8, bottom: 8 }}><Pill text="You are sharing your screen" tone="info" icon="desktop-outline" /></View>
+            </>
           ) : (
             <>
               <Ionicons name="desktop-outline" size={34} color="rgba(255,255,255,0.7)" />
-              <Txt variant="label" color="rgba(255,255,255,0.8)" center>{provider === 'livekit' ? 'Starting screen share…' : 'Screen sharing needs the live media server. Use Slides or the Board for now.'}</Txt>
+              <Txt variant="label" color="rgba(255,255,255,0.8)" center>Choose a window or screen to share. Learners see it live.</Txt>
+              <Button title="Share screen" size="md" onPress={() => changeStage('screen')} />
             </>
           )}
         </View>
@@ -379,10 +411,19 @@ export default function HostRoom() {
         </View>
       )}
       <View style={styles.selfTile} pointerEvents="none">
-        {cam ? <Ionicons name="person" size={30} color="rgba(255,255,255,0.7)" /> : <Avatar name={session.user.name} size={36} />}
+        {cam && localCam ? <RoomVideo stream={localCam} fit="cover" /> : <Avatar name={session.user.name} size={36} />}
         {!mic && <Ionicons name="mic-off" size={12} color="#fff" style={styles.selfMic} />}
       </View>
-      {speaking && <View style={styles.speaking} pointerEvents="none"><Pill text={`${speaking.name.split(' ')[0]} may speak`} tone="success" icon="mic" /></View>}
+      {speakerView && (
+        <View style={styles.speakerTile} pointerEvents="none">
+          {speakerView.stream ? <RoomVideo stream={speakerView.stream} fit="cover" /> : <Ionicons name="mic" size={22} color="#3FD17C" style={{ alignSelf: 'center', marginTop: 10 }} />}
+          <View style={styles.speakerName}>
+            <Ionicons name="mic" size={10} color="#3FD17C" />
+            <Txt variant="caption" color="#fff" style={{ fontSize: 10 }} numberOfLines={1}>{speakerView.name}</Txt>
+          </View>
+        </View>
+      )}
+      {speaking && !speakerView && <View style={styles.speaking} pointerEvents="none"><Pill text={`${speaking.name.split(' ')[0]} may speak`} tone="success" icon="mic" /></View>}
     </View>
   );
 
@@ -409,7 +450,7 @@ export default function HostRoom() {
           ))}
           <Small icon="remove-circle-outline" label="Eraser" active={pen === 'eraser'} onPress={() => setPen('eraser')} />
           <Small icon="arrow-undo" label="Undo" disabled={!strokes.length} onPress={() => { const rest = strokes.slice(0, -1); setRedo((r) => [...r, strokes[strokes.length - 1]]); setStrokes(rest); resendBoard(rest); }} />
-          <Small icon="arrow-redo" label="Redo" disabled={!redo.length} onPress={() => { const next = [...strokes, redo[redo.length - 1]]; setStrokes(next); setRedo((r) => r.slice(0, -1)); tx({ t: 'stroke', color: next[next.length - 1].color, w: next[next.length - 1].w, pts: next[next.length - 1].pts.slice(0, 400) }); }} />
+          <Small icon="arrow-redo" label="Redo" disabled={!redo.length} onPress={() => { const next = [...strokes, redo[redo.length - 1]]; setStrokes(next); setRedo((r) => r.slice(0, -1)); sendStroke(next[next.length - 1]); }} />
           <Small icon="trash-outline" label="Clear board" disabled={!strokes.length} onPress={() => { setStrokes([]); setRedo([]); tx({ t: 'board_clear' }); }} />
         </View>
       )}
@@ -533,8 +574,8 @@ export default function HostRoom() {
 
   const controls = (
     <View style={[styles.controls, { backgroundColor: '#0B1426' }]}>
-      <Ctrl icon={mic ? 'mic' : 'mic-off'} label={mic ? 'Mute' : 'Unmute'} off={!mic} onPress={() => { setMic(!mic); room.current?.setMic(!mic).catch(() => {}); }} />
-      <Ctrl icon={cam ? 'videocam' : 'videocam-off'} label={cam ? 'Camera' : 'Camera off'} off={!cam} onPress={() => { setCam(!cam); room.current?.setCam(!cam).catch(() => {}); }} />
+      <Ctrl icon={mic ? 'mic' : 'mic-off'} label={mic ? 'Mute' : 'Unmute'} off={!mic} onPress={() => { room.current?.setMic(!mic).then(() => { micRef.current = !mic; setMic(!mic); }).catch((e) => flash((e as Error).message)); }} />
+      <Ctrl icon={cam ? 'videocam' : 'videocam-off'} label={cam ? 'Camera' : 'Camera off'} off={!cam} onPress={() => { room.current?.setCam(!cam).then(() => setCam(!cam)).catch((e) => flash((e as Error).message)); }} />
       <Ctrl icon="bookmark-outline" label="Bookmark" onPress={() => { chapter(stage === 'slides' ? slides[slide].t : `Bookmark at ${fmt(elapsed)}`); flash('Chapter added to recording'); }} />
       <Ctrl icon="attach" label="Share file" onPress={shareFile} />
       <Ctrl icon={rec ? 'pause-circle' : 'radio-button-on'} label={rec ? 'Pause rec' : 'Record'} off={!rec} onPress={toggleRecord} />
@@ -656,6 +697,8 @@ const styles = StyleSheet.create({
   selfTile: { position: 'absolute', right: 8, top: 8, width: 64, height: 48, borderRadius: 10, backgroundColor: '#1E3A5F', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' },
   selfMic: { position: 'absolute', bottom: 2, left: 3, backgroundColor: '#E5383B', borderRadius: 6, padding: 1 },
   speaking: { position: 'absolute', left: 8, top: 8 },
+  speakerTile: { position: 'absolute', left: 8, top: 8, width: 120, height: 80, borderRadius: 12, overflow: 'hidden', borderWidth: 2, borderColor: '#3FD17C', backgroundColor: '#0B1426' },
+  speakerName: { position: 'absolute', left: 4, right: 4, bottom: 3, flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 6, paddingHorizontal: 4 },
   tools: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
   seg: { flexDirection: 'row', borderRadius: 12, padding: 3 },
   segBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, minHeight: 38, borderRadius: 10 },

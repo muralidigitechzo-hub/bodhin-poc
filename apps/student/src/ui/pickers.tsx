@@ -124,10 +124,10 @@ export function Stepper({ label, value, onChange, min = 1, max = 500, step = 1 }
 }
 
 /** Scrollable pill tabs used on Batch, Student profile and similar screens. */
-export function PillTabs<T extends string>({ tabs, value, onChange }: { tabs: { id: T; label: string; icon?: keyof typeof Ionicons.glyphMap }[]; value: T; onChange: (t: T) => void }) {
+export function PillTabs<T extends string>({ tabs, value, onChange, flush }: { tabs: { id: T; label: string; icon?: keyof typeof Ionicons.glyphMap }[]; value: T; onChange: (t: T) => void; /** no side padding: line up with the content above and below */ flush?: boolean }) {
   const { c } = useTheme();
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }} style={{ flexGrow: 0 }} accessibilityRole="tablist">
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: flush ? 0 : 16 }} style={{ flexGrow: 0 }} accessibilityRole="tablist">
       {tabs.map((t) => {
         const on = t.id === value;
         return (

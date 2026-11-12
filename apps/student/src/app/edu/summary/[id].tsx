@@ -85,14 +85,16 @@ export default function ClassSummary() {
               </View>
             </View>
           </View>
-          <View style={[styles.tabsWrap, { backgroundColor: c.ivory }]}>
-            <PillTabs<Tab> value={tab} onChange={setTab} tabs={[
+          <View style={[styles.pad, { backgroundColor: c.ivory, paddingVertical: 10 }]}>
+            <View style={styles.inner}>
+            <PillTabs<Tab> flush value={tab} onChange={setTab} tabs={[
               { id: 'overview', label: 'Overview', icon: 'reader-outline' },
               { id: 'recording', label: 'Recording', icon: 'play-circle-outline' },
               { id: 'materials', label: `Materials · ${sum.materials.length}`, icon: 'document-attach-outline' },
               ...(s.batchId ? [{ id: 'attendance' as const, label: 'Attendance', icon: 'checkbox-outline' as const }] : []),
               { id: 'qa', label: `Q&A · ${sum.qa.length}`, icon: 'help-circle-outline' },
             ]} />
+            </View>
           </View>
           <View style={styles.pad}>
             <View style={styles.inner}>
@@ -252,7 +254,7 @@ const styles = StyleSheet.create({
   top: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 8 },
   pad: { paddingHorizontal: 16, alignItems: 'center' },
   inner: { width: '100%', maxWidth: layout.contentMaxWidth, gap: 12 },
-  tabsWrap: { paddingVertical: 10, paddingHorizontal: 16 },
+  tabsWrap: { paddingVertical: 10, paddingHorizontal: 16, alignItems: 'center' },
   card: { borderWidth: 1, borderRadius: 18, padding: 14, gap: 8 },
   stats: { flexDirection: 'row', gap: 8, marginTop: 4 },
   stat: { flex: 1, borderRadius: 12, padding: 8, alignItems: 'center', gap: 2 },

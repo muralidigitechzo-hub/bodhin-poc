@@ -162,6 +162,23 @@ export function strokePath(pts: [number, number][]) {
   return p.map((q, i) => `${i ? 'L' : 'M'}${(q[0] * BOARD_W).toFixed(1)} ${(q[1] * BOARD_H).toFixed(1)}`).join(' ');
 }
 
+/**
+ * Live whiteboard streaming: which new pieces of a stroke should be sent now.
+ * Each piece starts at the last point of the previous piece, so the line stays connected on every learner's screen.
+ * While drawing (`final` false) the newest point is held back one tick; on pen-up (`final` true) everything is flushed.
+ */
+export function strokePieces(pts: [number, number][], sent: number, final: boolean) {
+  const pieces: [number, number][][] = [];
+  let at = sent;
+  while (pts.length - at > (final ? 0 : 1)) {
+    const from = Math.max(0, at - 1);
+    const to = Math.min(pts.length, from + 399);
+    pieces.push(pts.slice(from, to));
+    at = to;
+  }
+  return { pieces, sent: at };
+}
+
 /** Room name is tenant-scoped so two academies can never collide or peek at each other's rooms. */
 export const roomName = (tenantId: string, sessionId: string) => `${tenantId}:${sessionId}`;
 

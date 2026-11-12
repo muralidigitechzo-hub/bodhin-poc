@@ -54,6 +54,7 @@ export default function More() {
             <Group title="Teaching" icon="school-outline">
               <Row icon="document-text-outline" title="Grade assignments" sub="Rubric scoring, oldest first" onPress={() => router.push('/edu/grading')} />
               <Row icon="help-circle-outline" title="Quizzes & assignments" sub="Create, publish and see results" onPress={() => router.push('/edu/assess')} />
+              <Row icon="pulse-outline" title="Retention radar" sub="Students at risk of dropping out" onPress={() => router.push('/edu/retention')} />
               <Row icon="chatbubbles-outline" title="Student doubts" sub="Lesson questions waiting for you" onPress={() => router.push('/edu/doubts')} />
               <Row icon="megaphone-outline" title="Announcements" sub="Open a batch → Updates" onPress={() => router.navigate('/educator/batches')} />
             </Group>

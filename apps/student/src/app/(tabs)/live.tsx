@@ -1,5 +1,6 @@
 /** Live tab — combines the Live Classes and Live Class History & Attendance designs. */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { onRemoteChange } from '@/api/mockDb';
 import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useLayout } from '@/ui/responsive';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,6 +30,12 @@ export default function Live() {
   const [calMsg, setCalMsg] = useState('');
   const { data, loading, error, reload } = useAsync(() => liveTab.schedule(userId, tenant?.id ?? null), [userId, tenant?.id]);
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+  // a class the tutor just scheduled or started shows up by itself
+  useEffect(() => {
+    const t = setInterval(() => reload(), 5000);
+    const off = onRemoteChange(() => reload());
+    return () => { clearInterval(t); off(); };
+  }, [reload]);
 
   const web = Platform.OS === 'web';
   /** Web: download an .ics file with every upcoming class and a 15-minute reminder. */
@@ -80,7 +87,10 @@ export default function Live() {
               <View style={{ gap: 12, marginTop: 14 }}>
                 {data.liveNow.map((r) => <LiveNowCard key={r.session.id} row={r} onJoin={() => join(r.session.id)} />)}
                 {data.upcoming.length === 0 && data.liveNow.length === 0 && (
-                  <Txt color={c.muted} center style={{ paddingVertical: 30 }}>No live classes scheduled. Your tutors' sessions will appear here.</Txt>
+                  <View style={{ alignItems: 'center', gap: 12, paddingVertical: 30 }}>
+                    <Txt color={c.muted} center>{data.enrolledCourses === 0 ? 'You have not enrolled in any course yet. Live classes of the courses you join appear here.' : `No live class is scheduled for your ${data.enrolledCourses} course${data.enrolledCourses === 1 ? '' : 's'} yet. When your tutor schedules one it appears here.`}</Txt>
+                    {data.enrolledCourses === 0 && <Button title="Browse courses" size="md" onPress={() => router.push('/explore')} />}
+                  </View>
                 )}
                 {groupByDay(data.upcoming).map(([day, rows]) => (
                   <View key={day} style={{ gap: 10 }}>
@@ -148,7 +158,7 @@ function groupByDay(rows: Row[]) {
 }
 
 function LiveNowCard({ row, onJoin }: { row: Row; onJoin: () => void }) {
-  const mins = Math.round((Date.now() - new Date(row.session.startsAt).getTime()) / 6e4);
+  const mins = Math.max(0, Math.round((Date.now() - new Date(row.startedAt ?? row.session.startsAt).getTime()) / 6e4));
   return (
     <LinearGradient colors={['#071F44', '#12407F']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.liveNow}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>

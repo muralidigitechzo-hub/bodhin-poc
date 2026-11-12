@@ -80,6 +80,12 @@ interface Db {
   sessionSummaries: Record<string, LiveSummary>;
   /** Status overrides for course-level live sessions (batch sessions store status on the row). */
   sessionStatus: Record<string, 'conducted' | 'cancelled'>;
+  /** Classes the tutor has actually started (session id → ISO time). Learners see these as LIVE NOW and get a notification. */
+  liveStarted?: Record<string, string>;
+  /** Nudges tutors sent to at-risk students (real: `nudges` table, append-only). */
+  nudges?: import('@/core/nudge').Nudge[];
+  /** Which 10-second pieces of a video each enrolled learner really watched: lessonId → userId → piece numbers (real: lesson_watch_buckets). */
+  watch?: Record<string, Record<string, number[]>>;
   activity: { id: string; tenantId: string; kind: 'enroll' | 'live' | 'submission' | 'certificate' | 'review' | 'payout'; text: string; at: string; link?: { pathname: string; params?: Record<string, string> } }[];
 }
 
@@ -451,6 +457,24 @@ function load(): Db {
 }
 
 export const db: Db = load();
+
+const remoteListeners = new Set<() => void>();
+/** Called after another tab changed the shared demo data (e.g. the tutor scheduled or ended a class). */
+export const onRemoteChange = (fn: () => void) => {
+  remoteListeners.add(fn);
+  return () => remoteListeners.delete(fn);
+};
+if (canPersist && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY || !e.newValue) return;
+    try {
+      Object.assign(db, JSON.parse(e.newValue)); // the writer's copy is complete, so adopt it in place
+      remoteListeners.forEach((fn) => fn());
+    } catch {
+      /* ignore a half-written value */
+    }
+  });
+}
 
 export function persist() {
   if (!canPersist) return;
