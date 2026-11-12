@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "Bodhin",
+    "slug": "bodhin",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.thebodhin.app",
+      "infoPlist": {
+        "NSCalendarsUsageDescription": "Bodhin adds your live classes to your calendar.",
+        "NSCameraUsageDescription": "Turn on your camera in live classes.",
+        "NSMicrophoneUsageDescription": "Speak in live classes when the tutor allows it."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.thebodhin.app",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR"
+      ]
+    },
+    "web": {
+      "output": "single",
+      "bundler": "metro",
+      "favicon": "./assets/brand/mark.png"
+    },
+    "scheme": "bodhin",
+    "splash": {
+      "image": "./assets/brand/logo-full.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FBF7F0"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "asyncRoutes": false
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
