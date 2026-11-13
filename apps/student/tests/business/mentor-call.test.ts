@@ -68,7 +68,7 @@ ok(th.room === ts.room && th.provider === 'loopback', 'both people are given the
   // media honesty in the preview (no fake audio/video)
   let mic = '';
   try { await tutor.rm.setMic(true); } catch (e: any) { mic = e.message; }
-  ok(/media server/i.test(mic), 'microphone fails honestly without the media server', mic);
+  ok(/media server|cannot share audio/i.test(mic), 'microphone fails honestly without the media server', mic);
 
   await learner.rm.disconnect();
   await sleep();

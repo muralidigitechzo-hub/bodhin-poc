@@ -21,7 +21,6 @@ import { layout, radius } from '@/theme/tokens';
 import { Txt } from '@/ui/Txt';
 import { Button } from '@/ui/Button';
 import { MentorshipCard } from '@/ui/MentorshipCard';
-import { AppHeader, BottomSheet, ErrorState, Pill, ProgressBar, SectionHeader, Skeleton, useAsync } from '@/ui/kit';
 import { AppHeader, Avatar, BottomSheet, ErrorState, Pill, ProgressBar, SectionHeader, Skeleton, useAsync } from '@/ui/kit';
 
 type Data = Awaited<ReturnType<typeof educator.dashboard>>;

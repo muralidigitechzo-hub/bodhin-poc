@@ -17,6 +17,10 @@ import { PLANS, type Plan, type PlanId } from '@/core/plans';
 import { attendancePct, batchStatus, generateSessions, weeksBetween, type Announcement, type AttendanceMark, type Batch, type Mark, type MemberStatus, type Person } from '@/core/batch';
 import type { ClassSession, LiveSummary } from '@/core/batch';
 import { joinWindow } from '@/live/protocol';
+import { eligibility, isHexColor, resolveCertTemplate, type CertRequest, type CertTemplate, type Eligibility, type QuizStanding } from '@/core/certification';
+import { DEFAULT_RISK_RULES, assessRisk, byUrgency, summarise, type Risk } from '@/core/retention';
+import { analyseWatch, bucketCount, mergeBuckets, watchedBuckets } from '@/core/watch';
+import { NUDGE_COOLDOWN_DAYS, NUDGE_TEMPLATES, agoLabel, cooldownLeftDays, renderNudge, returnedAfter, textProblem, whatsappLink, type Nudge, type NudgeChannel } from '@/core/nudge';
 import { rubricOf, score as scoreQuiz, type Assessment, type AssessStatus, type Attempt, type Question, type Submission } from '@/core/assess';
 
 /** Apply educator-created/edited courses on top of the demo catalogue (in place, so every reader sees them). */
